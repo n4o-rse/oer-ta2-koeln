@@ -1,8 +1,8 @@
 ---
-title: "OER-Skript"
-subtitle: "Untertitel des OER-Skripts"
+title: "Knowledge Graphs in Action: Beispiele aus NFDI4Objects Task Area 2"
+subtitle: "Beispiele aus NFDI4Objects Task Area 2, TRAIL 2.5 und 2.8"
 lang: de
-date: 1900-01-01
+date: 2026-04-10
 date-format: "DD.MM.YYYY"
 date-modified: last-modified
 metadata-files:
@@ -25,11 +25,10 @@ execute:
   freeze: auto
 ---
 
-Herzlichen Glückwunsch 🎉 – Sie haben erfolgreich ein OER-Skript aus dem Template generiert!
-
 ## Einleitung
 
 <!-- Holen Sie die Lernenden in diesem Absatz ab. Stellen Sie in wenigen Sätzen, mit Beispielen und Fragen das Thema des Bausteins vor. -->
+Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet.
 
 ### Lernziele {.kolophon .unnumbered .unlisted}
 

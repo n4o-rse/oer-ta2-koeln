@@ -3,6 +3,7 @@ project:
   output-dir: _site
   resources:
     - notebooks/PotterAttributionExample.ttl
+    - notebooks/amt-python.ipynb
 
 website:
   title: "OER-Skript"
