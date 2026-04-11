@@ -4,9 +4,10 @@ project:
   resources:
     - notebooks/PotterAttributionExample.ttl
     - notebooks/amt-python.ipynb
+    - img/CC_SemanticLOD_Logo.png
 
 website:
-  title: "OER-Skript"
+  title: "Knowledge Graphs in Action"
   navbar:
     left:
       - text: "Skript"
