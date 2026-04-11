@@ -1,0 +1,301 @@
+---
+title: "Academic Meta Tool (AMT) – Interaktiv"
+format: live-html
+engine: knitr
+pyodide:
+  packages:
+    - pandas
+  resources:
+    - PotterAttributionExample.ttl
+---
+
+{{< include ../_extensions/r-wasm/live/_knitr.qmd >}}
+
+## Über das Academic Meta Tool
+
+Dieses interaktive Notebook ist eine vollständige Python-Portierung des
+[Academic Meta Tool (AMT)](http://academic-meta-tool.xyz/), ursprünglich in
+JavaScript (N3.js + vis.js) geschrieben.
+
+::: {.callout-note}
+Diese Demo verwendet das **Potter Attribution Example** als feste Beispiel-Ontologie.
+Für eigene TTL-Dateien steht das [Jupyter Notebook](amt-python.ipynb) zur Verfügung.
+:::
+
+---
+
+## Schritt 1 – Setup
+
+```{pyodide}
+#| label: amt-setup
+#| autorun: false
+import re, copy
+from pathlib import Path
+
+import micropip
+await micropip.install("rdflib")
+await micropip.install("pyvis")
+
+from rdflib import Graph, Namespace, RDF, RDFS, URIRef
+from rdflib.namespace import XSD
+import pandas as pd
+from pyvis.network import Network
+
+AMT = Namespace("http://academic-meta-tool.xyz/vocab#")
+
+amt = None; concepts = {}; roles = {}
+nodes = {}; edges = []; axioms = []; PREFIX = ""
+
+print("✓ Bibliotheken geladen")
+```
+
+---
+
+## Schritt 2 – Daten laden & Engine
+
+```{pyodide}
+#| label: amt-core
+#| autorun: false
+
+TTL_FILE = "PotterAttributionExample.ttl"
+
+def _local(iri):
+    return str(iri).split("/")[-1].split("#")[-1]
+
+def load_amt(ttl_str):
+    g = Graph()
+    g.parse(data=ttl_str, format="turtle")
+    _c = {}
+    for c in g.subjects(RDF.type, AMT.Concept):
+        label = str(g.value(c, RDFS.label) or _local(c))
+        _c[str(c)] = {"iri": str(c), "label": label,
+                      "placeholder": str(g.value(c, AMT.placeholder) or label)}
+    _r = {}
+    for r in sorted(g.subjects(RDF.type, AMT.Role),
+                    key=lambda x: str(g.value(x, RDFS.label) or x)):
+        _r[str(r)] = {"iri": str(r),
+                      "label":  str(g.value(r, RDFS.label)  or _local(r)),
+                      "domain": str(g.value(r, RDFS.domain) or ""),
+                      "range":  str(g.value(r, RDFS.range)  or "")}
+    _n = {}
+    for ciri in _c:
+        for inst in g.subjects(AMT.instanceOf, URIRef(ciri)):
+            label = str(g.value(inst, RDFS.label) or _local(inst))
+            _n[str(inst)] = {"id": str(inst), "label": label, "concept": ciri}
+    _e = []
+    for stmt in g.subjects(AMT.weight, None):
+        frm = g.value(stmt, RDF.subject); role = g.value(stmt, RDF.predicate)
+        to  = g.value(stmt, RDF.object);  w    = g.value(stmt, AMT.weight)
+        if frm and role and to and w is not None:
+            _e.append({"role": str(role), "from": str(frm),
+                       "to": str(to), "weight": min(float(w), 1.0)})
+    _ax_types = set()
+    for cls in g.subjects(RDFS.subClassOf, AMT.Axiom):
+        _ax_types.add(cls)
+        for sub in g.subjects(RDFS.subClassOf, cls): _ax_types.add(sub)
+    _ax = []
+    for atype in _ax_types:
+        for axiom in g.subjects(RDF.type, atype):
+            entry = {"type": _local(atype)}
+            for _, p, o in g.triples((axiom, None, None)):
+                if p != RDF.type: entry[_local(p)] = str(o)
+            _ax.append(entry)
+    return {"concepts": _c, "roles": _r, "nodes": _n, "edges": _e, "axioms": _ax}
+
+def _conj(x, y, logic):
+    PFX = "http://academic-meta-tool.xyz/vocab#"
+    if logic == PFX + "LukasiewiczLogic": return max(x + y - 1, 0.0)
+    if logic == PFX + "ProductLogic":     return x * y
+    if logic == PFX + "GoedelLogic":      return min(x, y)
+    return 0.0
+
+def do_reasoning(edges, axioms):
+    result = copy.deepcopy(edges)
+    def _find(role, frm, to):
+        return next((e for e in result
+                     if e["role"]==role and e["from"]==frm and e["to"]==to), None)
+    changed = True
+    while changed:
+        changed = False
+        for ax in axioms:
+            if ax["type"] == "RoleChainAxiom":
+                ant1, ant2, cons = ax.get("antecedent1"), ax.get("antecedent2"), ax.get("consequent")
+                logic = ax.get("logic", "")
+                for e1 in list(result):
+                    for e2 in list(result):
+                        if e1["to"]==e2["from"] and e1["role"]==ant1 and e2["role"]==ant2:
+                            w = _conj(e1["weight"], e2["weight"], logic)
+                            if w <= 0: continue
+                            w = min(round(w, 6), 1.0)
+                            ex = _find(cons, e1["from"], e2["to"])
+                            if ex is None:
+                                result.append({"role": cons, "from": e1["from"],
+                                               "to": e2["to"], "weight": w, "inferred": True})
+                                changed = True
+                            elif ex["weight"] < w:
+                                ex["weight"] = w; changed = True
+            elif ax["type"] == "InverseAxiom":
+                ant, inv = ax.get("antecedent"), ax.get("inverse")
+                for e in list(result):
+                    if e["role"] == ant and _find(inv, e["to"], e["from"]) is None:
+                        result.append({"role": inv, "from": e["to"], "to": e["from"],
+                                       "weight": e["weight"], "inferred": True})
+                        changed = True
+    return result
+
+def check_consistency(edges, axioms):
+    reasoned = do_reasoning(edges, axioms)
+    violations = []
+    def _find(role, frm, to):
+        return next((e for e in reasoned
+                     if e["role"]==role and e["from"]==frm and e["to"]==to), None)
+    for ax in axioms:
+        if ax["type"] == "DisjointAxiom":
+            r1, r2 = ax.get("role1"), ax.get("role2")
+            for e in reasoned:
+                if e["role"]==r1 and _find(r2, e["from"], e["to"]):
+                    violations.append(f"DisjointAxiom: {_local(e['from'])}")
+        if ax["type"] == "SelfDisjointAxiom":
+            role = ax.get("role")
+            for e in reasoned:
+                if e["role"]==role and e["from"]==e["to"]:
+                    violations.append(f"SelfDisjointAxiom: {_local(e['from'])}")
+    return (len(violations)==0, violations)
+
+# Datei aus VFS laden
+ttl_str  = Path(TTL_FILE).read_text(encoding="utf-8")
+amt      = load_amt(ttl_str)
+concepts = amt["concepts"]
+roles    = amt["roles"]
+nodes    = amt["nodes"]
+edges    = amt["edges"]
+axioms   = amt["axioms"]
+if nodes:
+    PREFIX = next(iter(nodes.values()))["id"].rsplit("/", 1)[0] + "/"
+
+print(f"✓ {TTL_FILE} geladen")
+print(f"  {len(concepts)} Concepts | {len(roles)} Roles | "
+      f"{len(nodes)} Nodes | {len(edges)} Edges | {len(axioms)} Axioms")
+print(f"  Namespace: {PREFIX}")
+```
+
+---
+
+## Schritt 3 – Visualisierung & Export
+
+```{pyodide}
+#| label: amt-vis
+#| autorun: false
+from IPython.display import HTML, display as ipy_display
+import warnings
+
+_PALETTE = [
+    {"bg": "coral",   "border": "#c05a00"},
+    {"bg": "#5b9bd5", "border": "#2e75b6"},
+    {"bg": "#70ad47", "border": "#538135"},
+    {"bg": "#ffc000", "border": "#c07a00"},
+    {"bg": "#7030a0", "border": "#4b1a6e"},
+    {"bg": "#ed7d31", "border": "#843c00"},
+]
+
+def show_amt(nodes, edges, concepts, reasoning=False, axioms=None, height="560px", cell_id="basic"):
+    assert amt is not None, "⚠ Zuerst Schritt 2 ausführen."
+    display_edges = do_reasoning(edges, axioms or []) if reasoning else edges
+    net = Network(height=height, width="100%", directed=True,
+                  bgcolor="#ffffff", cdn_resources="in_line", notebook=False)
+    net.barnes_hut(gravity=-8000, spring_length=350,
+                   spring_strength=0.02, damping=0.5)
+    color_map = {c: _PALETTE[i % len(_PALETTE)]
+                 for i, c in enumerate(concepts.keys())}
+    for node in nodes.values():
+        col = color_map.get(node["concept"], _PALETTE[0])
+        net.add_node(node["id"], label=node["label"],
+                     color={"background": col["bg"], "border": col["border"],
+                            "highlight": {"background": "white", "border": col["border"]}},
+                     shape="dot", size=20,
+                     font={"size": 16, "face": "monospace", "color": "#000"},
+                     title=f"Concept: {concepts.get(node['concept'],{}).get('label','?')}")
+    for e in display_edges:
+        inferred = e.get("inferred", False)
+        w = round(e["weight"], 3)
+        net.add_edge(e["from"], e["to"],
+                     label=f"{_local(e['role'])}: {w}",
+                     width=max(1, w * 5),
+                     color={"color": "#cc0000" if inferred else "#333333"},
+                     arrows="to", dashes=inferred,
+                     font={"size": 11, "face": "monospace",
+                           "color": "#cc0000" if inferred else "#333333",
+                           "align": "middle"},
+                     title="inferred" if inferred else "asserted")
+    net.save_graph("/tmp/amt.html")
+    html = Path("/tmp/amt.html").read_text()
+    h_px = int(height.replace("px","")) + 20
+    html_esc = html.replace("&", "&amp;").replace('"', "&quot;")
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ipy_display(HTML(
+            f'<iframe srcdoc="{html_esc}" width="100%" height="{h_px}px" '
+            f'style="border:1px solid #ddd;border-radius:4px;margin-top:6px"></iframe>'
+        ))
+    print(f"✓ {len(nodes)} Knoten, {len(display_edges)} Kanten")
+
+print("✓ Visualisierung geladen")
+```
+
+---
+
+## 4 – Graph ohne Reasoning
+
+```{pyodide}
+#| label: amt-graph-basic
+#| autorun: false
+assert amt is not None, "⚠ Bitte zuerst Schritte 1–3 ausführen."
+show_amt(nodes, edges, concepts, reasoning=False, cell_id="basic")
+```
+
+
+---
+
+## 5 – Graph mit Reasoning
+
+Gefolgerte Kanten als **rote gestrichelte Pfeile**.
+
+```{pyodide}
+#| label: amt-graph-reasoning
+#| autorun: false
+assert amt is not None, "⚠ Bitte zuerst Schritte 1–3 ausführen."
+reasoned = do_reasoning(edges, axioms)
+inferred = [e for e in reasoned if e.get("inferred")]
+print(f"Original: {len(edges)} | Gefolgert: {len(inferred)}")
+display(pd.DataFrame([
+    {"Von": _local(e["from"]), "Rolle": _local(e["role"]),
+     "Nach": _local(e["to"]), "Gewicht": round(e["weight"], 4)}
+    for e in inferred
+]))
+show_amt(nodes, edges, concepts, reasoning=True, axioms=axioms, cell_id="reasoning")
+```
+
+
+---
+
+## 6 – Konsistenzprüfung
+
+```{pyodide}
+#| label: amt-consistency
+#| autorun: false
+assert amt is not None, "⚠ Bitte zuerst Schritte 1–3 ausführen."
+ok, violations = check_consistency(edges, axioms)
+if ok:
+    print("✓ Graph ist konsistent.")
+else:
+    for v in violations: print(f"  • {v}")
+```
+
+---
+
+::: {.callout-tip}
+**Eigene TTL-Dateien analysieren?**
+Das [Jupyter Notebook](amt-python.ipynb) unterstützt den Upload beliebiger TTL-Dateien
+und läuft lokal in VS Code oder JupyterLab.
+:::

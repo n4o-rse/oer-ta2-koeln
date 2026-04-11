@@ -1,6 +1,8 @@
 project:
   type: website
   output-dir: _site
+  resources:
+    - notebooks/PotterAttributionExample.ttl
 
 website:
   title: "OER-Skript"
@@ -12,6 +14,8 @@ website:
         menu:
           - text: "Wikidata Ogham Sites (interaktiv)"
             href: notebooks/wikidata-ogham-sites-live.qmd
+          - text: "AMT – Academic Meta Tool (interaktiv)"
+            href: notebooks/amt-live.qmd
 
 execute:
   freeze: auto
