@@ -183,13 +183,17 @@ the cell's value via a `_repr_html_`-reprable object. `quarto-live`
 inserts the HTML on the main thread, where the browser happily runs
 the embedded `<script>` with full DOM access.
 
-This first map loads only core Leaflet — no plugins — so it is as
-simple as it gets. It includes a
-[layer control](https://leafletjs.com/examples/layers-control/) in
-the top-right corner with four base layers (OpenStreetMap as the
-default, the Humanitarian OSM style, Esri satellite imagery, and
-Esri's world terrain base) and the find-spot markers as a
-toggleable overlay. All provider URLs and attributions are taken
+This first map loads only core Leaflet, plus the
+[`Leaflet.fullscreen`](https://github.com/Leaflet/Leaflet.fullscreen)
+plugin for the maximise-to-fullscreen button under the zoom controls.
+
+A [layer control](https://leafletjs.com/examples/layers-control/) in
+the top-right corner (expand it by hovering or tapping) offers four
+base layers — OpenStreetMap as the default, the Humanitarian OSM
+style, Esri satellite imagery, and Esri's world terrain base — and
+one overlay *per county*, each with its colour swatch in the label.
+Unchecking a county hides just its markers, so you can isolate
+regions interactively. All provider URLs and attributions are taken
 from the
 [leaflet-providers registry](https://github.com/leaflet-extras/leaflet-providers).
 
@@ -223,10 +227,10 @@ markers = [
     }
     for _, row in df.iterrows()
 ]
-legend_entries = [
-    {"county": c, "color": county_colors[c]} for c in counties
-]
-markers_payload = json.dumps({"markers": markers, "legend": legend_entries})
+
+# Sorted county names paired with colours — JS will build one layer per county
+county_list = [{"county": c, "color": county_colors[c]} for c in counties]
+markers_payload = json.dumps({"markers": markers, "counties": county_list})
 
 # --- 3. A unique id so re-runs don't collide with previous renders -------
 markers_map_id = f"ogham-markers-{uuid.uuid4().hex[:8]}"
@@ -236,6 +240,7 @@ markers_data_var = f"__oghamMarkersData_{markers_map_id.replace('-', '_')}"
 markers_html = f"""
 <div id="{markers_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px"></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
 <script>window["{markers_data_var}"] = {markers_payload};</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -243,10 +248,32 @@ markers_html = f"""
     const mapId = "{markers_map_id}";
     const data = window["{markers_data_var}"];
 
+    // Load Leaflet.fullscreen dynamically AFTER core Leaflet is ready.
+    // Same pattern as the heatmap plugin: avoid the race where a parallel
+    // <script> tag evaluates before L is defined.
+    function loadFullscreenPlugin(cb) {{
+        if (typeof L !== 'undefined' && L.control.fullscreen) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadFullscreenPlugin(cb), 50);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js';
+        s.onload = cb;
+        document.head.appendChild(s);
+    }}
+
+    let initAttempts = 0;
+    const MAX_ATTEMPTS = 40;  // 40 × 50ms = 2 seconds total grace period
+
     function init() {{
         const el = document.getElementById(mapId);
         if (!el || typeof L === 'undefined') return setTimeout(init, 50);
         if (el._leaflet_id) return;
+
+        // Fullscreen plugin is optional; wait briefly, then proceed without it
+        const hasFullscreen = !!(L.control && L.control.fullscreen);
+        if (!hasFullscreen && initAttempts < MAX_ATTEMPTS) {{
+            initAttempts++;
+            return setTimeout(init, 50);
+        }}
 
         // --- Base layers (one active at a time) ------------------------
         // URLs and attributions taken from the leaflet-providers registry:
@@ -273,11 +300,17 @@ markers_html = f"""
             attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA, DeLorme, and NPS'
         }});
 
-        // --- Overlay: county-coloured markers --------------------------
-        const markersLayer = L.layerGroup();
-        const bounds = [];
+        // --- Overlays: one layer per county ---------------------------
+        // Each county gets its own L.layerGroup so it can be toggled
+        // independently. The marker colour comes from the same palette
+        // used elsewhere in the notebook.
+        const countyLayers = {{}};
+        const allBounds = [];
+        for (const c of data.counties) {{
+            countyLayers[c.county] = L.layerGroup();
+        }}
         for (const m of data.markers) {{
-            L.circleMarker([m.lat, m.lon], {{
+            const marker = L.circleMarker([m.lat, m.lon], {{
                 radius: 6, color: m.color, weight: 1.5,
                 fillColor: m.color, fillOpacity: 0.75
             }}).bindPopup(
@@ -285,48 +318,48 @@ markers_html = f"""
                 'Site: ' + m.site + '<br>' +
                 'County: ' + m.county + '<br>' +
                 '<a href="' + m.url + '" target="_blank" rel="noopener">Wikidata entry &#8599;</a>'
-            ).addTo(markersLayer);
-            bounds.push([m.lat, m.lon]);
+            );
+            marker.addTo(countyLayers[m.county]);
+            allBounds.push([m.lat, m.lon]);
         }}
 
-        // --- Create map with OSM as default basemap, markers on --------
-        const map = L.map(mapId, {{
-            center: [53.0, -8.0], zoom: 7,
-            layers: [osm, markersLayer]
-        }});
-        if (bounds.length) map.fitBounds(bounds, {{ padding: [30, 30] }});
+        // --- Create map, show OSM + all county layers by default -------
+        // Build an HTML legend swatch inside each overlay label so the
+        // layer-control doubles as a colour key.
+        const initialLayers = [osm];
+        const overlays = {{}};
+        for (const c of data.counties) {{
+            initialLayers.push(countyLayers[c.county]);
+            const swatch = '<span style="display:inline-block;width:10px;height:10px;'
+                + 'background:' + c.color + ';border-radius:50%;'
+                + 'margin-right:6px;vertical-align:middle"></span>';
+            overlays[swatch + c.county] = countyLayers[c.county];
+        }}
 
-        // --- Layer control: base layers (radio) + overlays (checkbox) --
+        const mapOptions = {{
+            center: [53.0, -8.0], zoom: 7,
+            layers: initialLayers
+        }};
+        if (hasFullscreen) {{
+            mapOptions.fullscreenControl = true;
+            mapOptions.fullscreenControlOptions = {{ position: 'topleft' }};
+        }}
+        const map = L.map(mapId, mapOptions);
+        if (allBounds.length) map.fitBounds(allBounds, {{ padding: [30, 30] }});
+
         const baseLayers = {{
             "OpenStreetMap": osm,
             "OpenStreetMap.HOT": osmHOT,
             "Esri.WorldImagery": esriImagery,
             "Esri.WorldTerrain": esriTerrain
         }};
-        const overlays = {{
-            "Find-spot markers": markersLayer
-        }};
-        L.control.layers(baseLayers, overlays, {{ collapsed: false }}).addTo(map);
-
-        // --- County colour legend (bottom-right) -----------------------
-        const legend = L.control({{ position: 'bottomright' }});
-        legend.onAdd = function() {{
-            const div = L.DomUtil.create('div');
-            div.style.cssText = 'background:rgba(255,255,255,0.92);padding:8px 10px;'
-                + 'border-radius:4px;font:12px/1.4 system-ui,sans-serif;'
-                + 'max-height:220px;overflow-y:auto;box-shadow:0 1px 4px rgba(0,0,0,0.2)';
-            div.innerHTML = '<b>County</b><br>' + data.legend.map(e =>
-                '<span style="display:inline-block;width:10px;height:10px;' +
-                'background:' + e.color + ';margin-right:6px;border-radius:50%"></span>' +
-                e.county
-            ).join('<br>');
-            return div;
-        }};
-        legend.addTo(map);
+        // collapsed:true → Leaflet default, expands on hover / tap
+        L.control.layers(baseLayers, overlays, {{ collapsed: true }}).addTo(map);
 
         setTimeout(() => map.invalidateSize(), 200);
     }}
-    init();
+
+    loadFullscreenPlugin(init);
 }})();
 </script>
 """
@@ -342,15 +375,16 @@ _Html(markers_html)
 
 The second map shows the same data as a density heatmap, which makes
 regional concentration immediately obvious. The heatmap is rendered
-by [`leaflet.heat`](https://github.com/Leaflet/Leaflet.heat), a small
-Leaflet plugin. The same four base layers as in Step 3a are offered;
-the heatmap is the overlay.
+by [`leaflet.heat`](https://github.com/Leaflet/Leaflet.heat), and
+[`Leaflet.fullscreen`](https://github.com/Leaflet/Leaflet.fullscreen)
+adds the maximise-to-fullscreen button. The same four base layers as
+in Step 3a are offered; the heatmap is the overlay.
 
-One subtlety worth pointing out: the plugin must be loaded *after*
-core Leaflet, because it extends `L` with `L.heatLayer`. Loading it
-as a parallel `<script>` tag would be a race condition — the plugin
-script might execute before `leaflet.js` is parsed, leaving `L`
-undefined. The pattern below loads the plugin dynamically from
+One subtlety worth pointing out: Leaflet plugins must be loaded
+*after* core Leaflet, because they extend the global `L`. Loading
+them as parallel `<script>` tags would be a race condition — a
+plugin script might execute before `leaflet.js` is parsed, leaving
+`L` undefined. The pattern below loads each plugin dynamically from
 inside the `<script>` block, so the order is guaranteed.
 
 ```{pyodide}
@@ -366,6 +400,7 @@ heatmap_payload = json.dumps([[m["lat"], m["lon"], 0.7] for m in markers])
 heatmap_html = f"""
 <div id="{heatmap_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px"></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
 <script>window["{heatmap_data_var}"] = {heatmap_payload};</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -373,22 +408,47 @@ heatmap_html = f"""
     const mapId = "{heatmap_map_id}";
     const points = window["{heatmap_data_var}"];
 
-    // Load heat plugin dynamically, AFTER core Leaflet is ready.
-    function loadHeatPlugin(cb) {{
-        if (typeof L !== 'undefined' && L.heatLayer) return cb();
-        if (typeof L === 'undefined') return setTimeout(() => loadHeatPlugin(cb), 50);
+    // Helper: load a Leaflet plugin script dynamically, after core Leaflet
+    // is ready. Parallel <script> tags race; this pattern doesn't.
+    function loadPluginWhenReady(src, readyCheck, cb) {{
+        if (typeof L !== 'undefined' && readyCheck()) return cb();
+        if (typeof L === 'undefined') {{
+            return setTimeout(() => loadPluginWhenReady(src, readyCheck, cb), 50);
+        }}
         const s = document.createElement('script');
-        s.src = 'https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js';
+        s.src = src;
         s.onload = cb;
         document.head.appendChild(s);
     }}
 
+    function loadAllPlugins(cb) {{
+        loadPluginWhenReady(
+            'https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js',
+            () => !!L.heatLayer,
+            () => loadPluginWhenReady(
+                'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js',
+                () => !!(L.control && L.control.fullscreen),
+                cb
+            )
+        );
+    }}
+
+    let initAttempts = 0;
+    const MAX_ATTEMPTS = 40;  // 40 × 50ms = 2 seconds grace for optional plugins
+
     function init() {{
         const el = document.getElementById(mapId);
-        if (!el || typeof L === 'undefined' || !L.heatLayer) {{
+        if (!el || typeof L === 'undefined') return setTimeout(init, 50);
+        if (el._leaflet_id) return;
+
+        // Heat plugin is required (no point rendering an empty map);
+        // fullscreen is optional — wait briefly, then proceed without it.
+        if (!L.heatLayer) return setTimeout(init, 50);
+        const hasFullscreen = !!(L.control && L.control.fullscreen);
+        if (!hasFullscreen && initAttempts < MAX_ATTEMPTS) {{
+            initAttempts++;
             return setTimeout(init, 50);
         }}
-        if (el._leaflet_id) return;
 
         // --- Base layers (one active at a time) ------------------------
         // URLs and attributions taken from the leaflet-providers registry:
@@ -420,15 +480,19 @@ heatmap_html = f"""
             radius: 22, blur: 18, maxZoom: 11
         }});
 
-        // --- Create map with OSM as default basemap, heatmap on --------
-        const map = L.map(mapId, {{
+        // --- Create map with OSM + heatmap + (optional) fullscreen ----
+        const mapOptions = {{
             center: [53.0, -8.0], zoom: 7,
             layers: [osm, heatLayer]
-        }});
+        }};
+        if (hasFullscreen) {{
+            mapOptions.fullscreenControl = true;
+            mapOptions.fullscreenControlOptions = {{ position: 'topleft' }};
+        }}
+        const map = L.map(mapId, mapOptions);
         const bounds = points.map(p => [p[0], p[1]]);
         if (bounds.length) map.fitBounds(bounds, {{ padding: [30, 30] }});
 
-        // --- Layer control: base layers (radio) + overlays (checkbox) --
         const baseLayers = {{
             "OpenStreetMap": osm,
             "OpenStreetMap.HOT": osmHOT,
@@ -438,12 +502,13 @@ heatmap_html = f"""
         const overlays = {{
             "Density heatmap": heatLayer
         }};
-        L.control.layers(baseLayers, overlays, {{ collapsed: false }}).addTo(map);
+        // collapsed:true → Leaflet default, expands on hover / tap
+        L.control.layers(baseLayers, overlays, {{ collapsed: true }}).addTo(map);
 
         setTimeout(() => map.invalidateSize(), 200);
     }}
 
-    loadHeatPlugin(init);
+    loadAllPlugins(init);
 }})();
 </script>
 """
