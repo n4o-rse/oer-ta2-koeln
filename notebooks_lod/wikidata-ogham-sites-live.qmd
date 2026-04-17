@@ -1,5 +1,5 @@
 ---
-title: "Wikidata Ogham Sites – Interaktives Notebook"
+title: "Wikidata Ogham Sites — Overview"
 format: live-html
 engine: knitr
 pyodide:
@@ -10,32 +10,100 @@ pyodide:
 
 {{< include ../_extensions/r-wasm/live/_knitr.qmd >}}
 
-## Über dieses Notebook
+## About this notebook
 
-Dieses interaktive Notebook läuft vollständig im Browser – kein Python muss lokal installiert sein.
-Es ruft Ogham-Steindaten per SPARQL-Abfrage von Wikidata ab und visualisiert sie als Balkendiagramme.
+This notebook is a hands-on introduction to working with **knowledge
+graph data** in Python, using [Wikidata](https://www.wikidata.org) —
+the largest openly-licensed general-purpose knowledge graph — as a
+live data source. It retrieves records about Ogham stones (early
+medieval inscribed monuments found mainly in Ireland and western
+Britain) via a [SPARQL](https://www.w3.org/TR/sparql11-query/) query
+and visualises their distribution as bar charts.
+
+It is part of an Open Educational Resource (OER) series on knowledge
+graphs and linked open data, and is designed to stand on its own:
+you do not need to have read any other notebook in the series to
+follow along. A local-Python variant of this notebook is available
+as `wikidata-ogham-sites.ipynb` (same content, for use with a regular
+Jupyter/VS Code setup).
+
+### Why this dataset?
+
+Ogham stones are a useful teaching dataset because they are:
+
+- **Well-curated** on Wikidata, with typed instances, find-spots, and
+  administrative districts linked by dedicated properties.
+- **Small enough** to fit comfortably in memory and render in a
+  browser, but large enough to yield meaningful aggregations.
+- **Rich in structure**: each record participates in several
+  relationships (instance-of, find-spot, county), which makes them a
+  good example for both entity-centric and aggregation queries.
+
+The same pipeline — SPARQL query → DataFrame → visualisation — can
+be reused for any other knowledge-graph dataset, regardless of
+domain. Companion notebooks in this series apply it to other
+endpoints and visualisation types.
+
+### Tooling notes
+
+Throughout this notebook we use:
+
+- **`pyodide.http.pyfetch`** to query Wikidata. Libraries like
+  `SPARQLWrapper` or `requests` cannot run in the browser because they
+  depend on blocking HTTP; in Pyodide we use `pyfetch`, which is
+  `async`/`await`-based. The local `.ipynb` variant of this notebook
+  uses `SPARQLWrapper` instead, which is more convenient when you are
+  not constrained to the browser.
+- **`pandas`** to hold the results in a tabular form. Once data is
+  in a DataFrame, standard data-science tooling (grouping,
+  filtering, plotting) applies — regardless of the original source
+  being a graph.
+- **`matplotlib`** for static bar charts. For the *map* variant of
+  this dataset, see the companion notebook
+  `wikidata-ogham-sites-map-live.qmd`, which uses Leaflet for
+  interactive geographic visualisation.
 
 ::: {.callout-note}
-Beim ersten Aufruf lädt der Browser die Python-Laufzeitumgebung (Pyodide, ~10 MB).
-Bitte einen Moment Geduld. Der Status wird unterhalb der Code-Zellen angezeigt.
+On first load, your browser downloads the Python runtime (Pyodide, ~10 MB).
+Please allow a moment for it to initialise.
 :::
 
-## SPARQL-Abfrage definieren
+## Step 1 — Defining the SPARQL query
 
-Die folgende Zelle enthält die SPARQL-Abfrage und eine Hilfsfunktion, die die
-Wikidata-API direkt per HTTP aufruft (kein externer SPARQL-Wrapper nötig).
+The query below asks Wikidata for every item that is an instance of
+[Ogham stone](https://www.wikidata.org/wiki/Q2016147) (`wd:Q2016147`),
+together with its find-spot (linked via `wdt:P189`), the county in
+which the find-spot lies, and — optionally — its coordinate location
+(`wdt:P625`).
+
+Two notes on query design that generalise to other knowledge-graph
+queries:
+
+- **`SERVICE wikibase:label`** is a Wikidata-specific service that
+  returns human-readable labels for every item variable that also has
+  a `?…Label` companion in the `SELECT` clause. It is significantly
+  cheaper than joining `rdfs:label` manually.
+- **`OPTIONAL`** is used for coordinates here because not every stone
+  in Wikidata has them; making them mandatory would drop perfectly
+  valid records. In the map variant of this notebook, we invert this
+  choice and make coordinates mandatory — that is the right call
+  there, but not here.
 
 ```{pyodide}
 #| autorun: false
+#| label: setup
 import json
+import urllib.parse
 from pyodide.http import pyfetch
 import pandas as pd
 import matplotlib
 import matplotlib.pyplot as plt
 matplotlib.rcParams['figure.dpi'] = 120
 
+SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
+
 SPARQL_QUERY = """
-SELECT ?item ?itemLabel ?geo ?site ?siteLabel ?county ?countyLabel WHERE { 
+SELECT ?item ?itemLabel ?geo ?site ?siteLabel ?county ?countyLabel WHERE {
   ?item wdt:P31 wd:Q2016147.
   ?item wdt:P189 ?site.
   ?site wdt:P31 wd:Q72617071.
@@ -46,31 +114,36 @@ SELECT ?item ?itemLabel ?geo ?site ?siteLabel ?county ?countyLabel WHERE {
 }
 """
 
-async def fetch_wikidata(query):
-    """Ruft SPARQL-Ergebnisse von Wikidata ab (browser-kompatibel via pyodide.http)."""
-    url = "https://query.wikidata.org/sparql"
-    params = {"query": query, "format": "json"}
-    # URL-Parameter manuell kodieren
-    import urllib.parse
-    full_url = url + "?" + urllib.parse.urlencode(params)
+async def fetch_wikidata(query, endpoint=SPARQL_ENDPOINT):
+    """Retrieve SPARQL results from a Wikibase endpoint (browser-compatible)."""
+    full_url = endpoint + "?" + urllib.parse.urlencode(
+        {"query": query, "format": "json"}
+    )
     response = await pyfetch(
         full_url,
         headers={
             "Accept": "application/sparql-results+json",
-            "User-Agent": "OER-Quarto-Notebook/1.0"
-        }
+            "User-Agent": "OER-Notebook/1.0",
+        },
     )
     data = await response.json()
     return data["results"]["bindings"]
 
-print("✓ Funktionen definiert. Nächste Zelle ausführen um Daten zu laden.")
+print("✓ Helpers defined. Run the next cell to load the data.")
 ```
 
-## Daten laden
+## Step 2 — Loading the data
+
+SPARQL results come back as JSON in a format called *bindings*: a list
+of dictionaries, one per solution, where each key maps to a
+`{"type": ..., "value": ...}` object. We flatten these into plain
+records and build a DataFrame. This shape — flat records with
+consistent keys — is almost always what you want when you plan to
+plot or aggregate.
 
 ```{pyodide}
 #| autorun: false
-# SPARQL-Anfrage absenden und DataFrame aufbauen
+#| label: load-data
 results = await fetch_wikidata(SPARQL_QUERY)
 
 rows = []
@@ -86,78 +159,119 @@ for r in results:
     })
 
 df = pd.DataFrame(rows)
-print(f"✓ {len(df)} Datensätze geladen – {df['itemLabel'].nunique()} einzigartige Ogham-Steine")
+print(f"✓ {len(df)} records loaded — {df['itemLabel'].nunique()} unique Ogham stones")
 df.head()
 ```
 
-## Visualisierung: Top-2-Fundorte je County
+::: {.callout-tip title="Common pitfall: duplicates"}
+A single Ogham stone can appear in multiple rows because a stone may
+be linked to more than one "find-spot" in Wikidata (e.g. both the
+original location and a current museum). When computing aggregates,
+remember to use `nunique()` or `drop_duplicates()` where appropriate,
+rather than `len(df)`.
+:::
+
+## Step 3a — Visualisation: top two find-spots per county
+
+For each Irish county, we identify the two find-spots with the
+highest number of associated Ogham stones. This highlights
+concentration patterns — which is often the first thing a domain
+expert wants to see when exploring a new dataset.
 
 ```{pyodide}
 #| autorun: false
-# Farbpalette pro County
+#| label: plot-top-sites
+assert 'df' in dir(), "⚠ Please run the data-loading cell first."
+
+# One colour per county, used consistently across plots in this notebook.
 unique_counties = df["countyLabel"].unique()
 county_colors = {
     county: color
     for county, color in zip(unique_counties, plt.cm.tab20.colors)
 }
 
-# Top-2-Fundorte je County berechnen
+# For each county, keep the two find-spots with the highest counts.
+# Using sort_values + head inside groupby avoids pandas' apply+nlargest
+# quirk around grouping-column inclusion — and is arguably clearer too.
 site_counts = (
     df.groupby(["countyLabel", "siteLabel"])
-    .size()
-    .reset_index(name="count")
+      .size()
+      .reset_index(name="count")
 )
 top_sites = (
     site_counts
-    .groupby("countyLabel", group_keys=False)
-    .apply(lambda x: x.nlargest(2, "count"))
-    .reset_index(drop=True)
+      .sort_values(["countyLabel", "count"], ascending=[True, False])
+      .groupby("countyLabel", as_index=False)
+      .head(2)
+      .reset_index(drop=True)
 )
 
-# Plot
 fig, ax = plt.subplots(figsize=(12, 7))
 for county, group in top_sites.groupby("countyLabel"):
     ax.bar(group["siteLabel"], group["count"],
            color=county_colors[county], label=county)
 
-ax.set_title("Top 2 Fundorte je County mit den meisten Ogham-Steinen")
-ax.set_xlabel("Fundort")
-ax.set_ylabel("Anzahl Ogham-Steine")
+ax.set_title("Top 2 find-spots per county with the most Ogham stones")
+ax.set_xlabel("Find-spot")
+ax.set_ylabel("Number of Ogham stones")
 plt.xticks(rotation=45, ha="right")
 ax.legend(title="County", bbox_to_anchor=(1.05, 1), loc="upper left")
 plt.tight_layout()
 plt.show()
 ```
 
-## Visualisierung: Verteilung nach County
+## Step 3b — Visualisation: distribution by county
+
+A simpler aggregation: how many Ogham-stone records does each county
+have? This kind of plot is the sanity-check step of almost any
+knowledge-graph query — if one county dominates the counts
+implausibly, that often signals a data-modelling quirk rather than a
+real-world pattern.
 
 ```{pyodide}
 #| autorun: false
+#| label: plot-by-county
+assert 'df' in dir(), "⚠ Please run the data-loading cell first."
+
 county_counts = df["countyLabel"].value_counts()
 
 fig, ax = plt.subplots(figsize=(10, 6))
 county_counts.plot(
     kind="bar",
     color=[county_colors[c] for c in county_counts.index],
-    ax=ax
+    ax=ax,
 )
-ax.set_title("Verteilung der Ogham-Steine nach County")
+ax.set_title("Distribution of Ogham stones by county")
 ax.set_xlabel("County")
-ax.set_ylabel("Anzahl Ogham-Steine")
+ax.set_ylabel("Number of Ogham stones")
 plt.xticks(rotation=45)
 plt.tight_layout()
 plt.show()
 ```
 
-## Daten explorieren
+## Step 4 — Exploring the data
 
-Diese Zelle kannst du frei bearbeiten und eigene Auswertungen ausprobieren:
+The cell below is a free playground. Edit the `county_filter` value,
+or write your own aggregations — the DataFrame `df` is available for
+the rest of the session.
 
 ```{pyodide}
 #| autorun: false
-# Beispiel: Alle Steine aus einem bestimmten County anzeigen
-county_filter = "County Kerry"  # <- hier anpassen
-subset = df[df["countyLabel"] == county_filter][["itemLabel", "siteLabel"]].drop_duplicates()
-print(f"Ogham-Steine in {county_filter}: {len(subset)}")
+#| label: explore
+assert 'df' in dir(), "⚠ Please run the data-loading cell first."
+
+# Example: list all stones from a specific county — change the filter here.
+county_filter = "County Kerry"
+subset = (
+    df[df["countyLabel"] == county_filter][["itemLabel", "siteLabel"]]
+      .drop_duplicates()
+)
+print(f"Ogham stones in {county_filter}: {len(subset)}")
 subset
 ```
+
+---
+
+*Part of an Open Educational Resource series on knowledge graphs and
+linked open data, produced in the context of
+[NFDI4Objects](https://www.nfdi4objects.net/).*

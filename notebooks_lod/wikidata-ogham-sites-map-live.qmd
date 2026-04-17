@@ -1,0 +1,503 @@
+---
+title: "Wikidata Ogham Sites — Interactive Map"
+format: live-html
+engine: knitr
+pyodide:
+  packages:
+    - pandas
+---
+
+{{< include ../_extensions/r-wasm/live/_knitr.qmd >}}
+
+## About this notebook
+
+This notebook fetches Ogham-stone records from
+[Wikidata](https://www.wikidata.org) and displays their find-spots on
+two interactive [Leaflet](https://leafletjs.com/) maps, each with an
+OpenStreetMap basemap. The first map shows individual stones as
+county-coloured markers with pop-up details; the second shows the
+same points as a density heatmap, making regional concentration
+visible at a glance.
+
+It is a companion to `wikidata-ogham-sites-live.qmd` (bar-chart
+overview of the same dataset) and part of an Open Educational
+Resource series on knowledge graphs and linked open data. A
+local-Python variant of this notebook is available as
+`wikidata-ogham-sites-map.ipynb`.
+
+### What you'll learn
+
+- How to extract **geographic coordinates** from a Wikidata SPARQL
+  response. Coordinates in Wikidata are stored as
+  [WKT](https://en.wikipedia.org/wiki/Well-known_text_representation_of_geometry)
+  `Point(lon lat)` literals — a string format that needs a small
+  parser before the values can be plotted.
+- How to build an **interactive web map** from Python in a
+  browser-only environment, by bridging from Python to JavaScript and
+  rendering through Leaflet.
+
+### Data-context notes
+
+The query in this notebook only returns records that *have*
+coordinates (`?item wdt:P625 ?geo`, not `OPTIONAL`). This is the
+right call for a map — records without coordinates cannot be
+plotted — but it also filters out a non-trivial share of stones,
+depending on how well the data is curated at the time you run it.
+The overview notebook makes the opposite choice, making coordinates
+optional, to give a complete picture of counts per county. The
+difference between those two result sets is itself an instructive
+thing to look at.
+
+A second subtlety: Wikidata stores coordinates in WGS 84
+(`EPSG:4326`), the same coordinate reference system Leaflet and
+OpenStreetMap expect. No reprojection is needed. If you later query
+an endpoint that uses a different projection (e.g. some national
+cultural-heritage registries), you will need to reproject.
+
+### Tooling notes
+
+Rendering an interactive map in a browser-only notebook is slightly
+unusual, because the Python libraries most people know for this
+(`folium`, `geopandas`, `contextily`) do not work well in Pyodide:
+`folium` expects to write HTML files, `geopandas` has heavy binary
+dependencies (GDAL, GEOS, PROJ), and `contextily` needs server-side
+HTTP. The local `.ipynb` variant of this notebook happily uses
+`folium`; the browser variant instead builds an HTML snippet with
+embedded Leaflet JavaScript and returns it as the cell's output.
+
+There is one additional browser-specific constraint worth knowing
+about: `quarto-live` runs Python inside a **Web Worker**, which has
+*no DOM access*. That means `js.document`, `js.eval()` targeting the
+DOM, and any direct manipulation of page elements from Python will
+fail with `ReferenceError: document is not defined`. The working
+pattern is the one used below: Python *builds* an HTML string
+containing the map container and the Leaflet-initialisation script,
+then returns it as the cell value. `quarto-live` inserts that HTML
+into the page on the main thread, where the browser has full DOM
+access and runs the embedded JavaScript normally.
+
+::: {.callout-note}
+On first load, your browser downloads the Python runtime (Pyodide, ~10 MB)
+and the Leaflet library (~150 KB). Please allow a moment for these
+to initialise.
+:::
+
+## Step 1 — Defining the SPARQL query
+
+We ask Wikidata for every Ogham stone, its find-spot, its county, and
+its coordinate location. The structure is almost identical to the
+overview notebook, with the one difference noted above: coordinates
+are required.
+
+```{pyodide}
+#| autorun: false
+#| label: setup
+import json
+import urllib.parse
+from pyodide.http import pyfetch
+import pandas as pd
+
+SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
+
+SPARQL_QUERY = """
+SELECT ?item ?itemLabel ?geo ?site ?siteLabel ?county ?countyLabel WHERE {
+  ?item wdt:P31 wd:Q2016147.
+  ?item wdt:P189 ?site.
+  ?site wdt:P31 wd:Q72617071.
+  ?item wdt:P189 ?county.
+  ?county wdt:P31 wd:Q179872.
+  ?item wdt:P625 ?geo.
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+}
+"""
+
+async def fetch_wikidata(query, endpoint=SPARQL_ENDPOINT):
+    """Retrieve SPARQL results from a Wikibase endpoint (browser-compatible)."""
+    full_url = endpoint + "?" + urllib.parse.urlencode(
+        {"query": query, "format": "json"}
+    )
+    response = await pyfetch(
+        full_url,
+        headers={
+            "Accept": "application/sparql-results+json",
+            "User-Agent": "OER-Notebook/1.0",
+        },
+    )
+    data = await response.json()
+    return data["results"]["bindings"]
+
+def parse_wkt_point(wkt):
+    """Parse a WKT Point literal 'Point(lon lat)' into (lat, lon)."""
+    if not wkt:
+        return (None, None)
+    try:
+        coords = wkt.replace("Point(", "").replace(")", "").split()
+        lon, lat = float(coords[0]), float(coords[1])
+        return (lat, lon)
+    except (ValueError, IndexError):
+        return (None, None)
+
+print("✓ Helpers defined. Run the next cell to load the data.")
+```
+
+## Step 2 — Loading the data
+
+The `parse_wkt_point` helper defined above converts each `Point(lon lat)`
+literal into a `(lat, lon)` tuple. Note the ordering: WKT is
+`lon lat`, but Leaflet (and most mapping libraries) expect
+`lat, lon`. Getting this the wrong way round is one of the most
+common mistakes when plotting spatial data — the kind of bug where
+everything "works" but all your points end up in the wrong
+hemisphere.
+
+```{pyodide}
+#| autorun: false
+#| label: load-data
+results = await fetch_wikidata(SPARQL_QUERY)
+
+rows = []
+for r in results:
+    lat, lon = parse_wkt_point(r.get("geo", {}).get("value"))
+    rows.append({
+        "item":        r["item"]["value"],
+        "itemLabel":   r["itemLabel"]["value"],
+        "site":        r["site"]["value"],
+        "siteLabel":   r["siteLabel"]["value"],
+        "county":      r["county"]["value"],
+        "countyLabel": r["countyLabel"]["value"],
+        "latitude":    lat,
+        "longitude":   lon,
+    })
+
+df = pd.DataFrame(rows).dropna(subset=["latitude", "longitude"])
+print(f"✓ {len(df)} records with coordinates loaded "
+      f"({df['itemLabel'].nunique()} unique Ogham stones "
+      f"across {df['countyLabel'].nunique()} counties).")
+df.head()
+```
+
+## Step 3a — Map with county-coloured markers
+
+We build the first map as an HTML string in Python and return it as
+the cell's value via a `_repr_html_`-reprable object. `quarto-live`
+inserts the HTML on the main thread, where the browser happily runs
+the embedded `<script>` with full DOM access.
+
+This first map loads only core Leaflet — no plugins — so it is as
+simple as it gets. It includes a
+[layer control](https://leafletjs.com/examples/layers-control/) in
+the top-right corner with four base layers (OpenStreetMap as the
+default, the Humanitarian OSM style, Esri satellite imagery, and
+Esri's world terrain base) and the find-spot markers as a
+toggleable overlay. All provider URLs and attributions are taken
+from the
+[leaflet-providers registry](https://github.com/leaflet-extras/leaflet-providers).
+
+```{pyodide}
+#| autorun: false
+#| label: render-markers-map
+assert 'df' in dir() and not df.empty, "⚠ Please run the data-loading cell first."
+
+import uuid
+
+# --- 1. Assign a colour to each county (reused across both maps) ---------
+palette = [
+    "#e6194B", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
+    "#42d4f4", "#f032e6", "#469990", "#9A6324", "#800000",
+    "#808000", "#000075", "#e6beff", "#fabed4", "#aaffc3",
+    "#fffac8", "#dcbeff", "#ffd8b1", "#a9a9a9", "#ffe119",
+]
+counties = sorted(df["countyLabel"].unique())
+county_colors = {c: palette[i % len(palette)] for i, c in enumerate(counties)}
+
+# --- 2. Prepare records as plain JSON-serialisable dicts -----------------
+markers = [
+    {
+        "lat":    float(row["latitude"]),
+        "lon":    float(row["longitude"]),
+        "name":   row["itemLabel"],
+        "site":   row["siteLabel"],
+        "county": row["countyLabel"],
+        "color":  county_colors[row["countyLabel"]],
+        "url":    row["item"],
+    }
+    for _, row in df.iterrows()
+]
+legend_entries = [
+    {"county": c, "color": county_colors[c]} for c in counties
+]
+markers_payload = json.dumps({"markers": markers, "legend": legend_entries})
+
+# --- 3. A unique id so re-runs don't collide with previous renders -------
+markers_map_id = f"ogham-markers-{uuid.uuid4().hex[:8]}"
+markers_data_var = f"__oghamMarkersData_{markers_map_id.replace('-', '_')}"
+
+# --- 4. Build the HTML + JS string ---------------------------------------
+markers_html = f"""
+<div id="{markers_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px"></div>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script>window["{markers_data_var}"] = {markers_payload};</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {{
+    const mapId = "{markers_map_id}";
+    const data = window["{markers_data_var}"];
+
+    function init() {{
+        const el = document.getElementById(mapId);
+        if (!el || typeof L === 'undefined') return setTimeout(init, 50);
+        if (el._leaflet_id) return;
+
+        // --- Base layers (one active at a time) ------------------------
+        // URLs and attributions taken from the leaflet-providers registry:
+        // https://github.com/leaflet-extras/leaflet-providers
+        const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }});
+        const osmHOT = L.tileLayer('https://{{s}}.tile.openstreetmap.fr/hot/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, '
+                + 'Tiles style by <a href="https://www.hotosm.org/" target="_blank">Humanitarian OpenStreetMap Team</a> '
+                + 'hosted by <a href="https://openstreetmap.fr/" target="_blank">OpenStreetMap France</a>'
+        }});
+        const esriImagery = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            maxZoom: 18,
+            attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, '
+                + 'Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+        }});
+        const esriTerrain = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            maxZoom: 13,  // Esri caps World_Terrain_Base at zoom 13
+            attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA, DeLorme, and NPS'
+        }});
+
+        // --- Overlay: county-coloured markers --------------------------
+        const markersLayer = L.layerGroup();
+        const bounds = [];
+        for (const m of data.markers) {{
+            L.circleMarker([m.lat, m.lon], {{
+                radius: 6, color: m.color, weight: 1.5,
+                fillColor: m.color, fillOpacity: 0.75
+            }}).bindPopup(
+                '<b>' + m.name + '</b><br>' +
+                'Site: ' + m.site + '<br>' +
+                'County: ' + m.county + '<br>' +
+                '<a href="' + m.url + '" target="_blank" rel="noopener">Wikidata entry &#8599;</a>'
+            ).addTo(markersLayer);
+            bounds.push([m.lat, m.lon]);
+        }}
+
+        // --- Create map with OSM as default basemap, markers on --------
+        const map = L.map(mapId, {{
+            center: [53.0, -8.0], zoom: 7,
+            layers: [osm, markersLayer]
+        }});
+        if (bounds.length) map.fitBounds(bounds, {{ padding: [30, 30] }});
+
+        // --- Layer control: base layers (radio) + overlays (checkbox) --
+        const baseLayers = {{
+            "OpenStreetMap": osm,
+            "OpenStreetMap.HOT": osmHOT,
+            "Esri.WorldImagery": esriImagery,
+            "Esri.WorldTerrain": esriTerrain
+        }};
+        const overlays = {{
+            "Find-spot markers": markersLayer
+        }};
+        L.control.layers(baseLayers, overlays, {{ collapsed: false }}).addTo(map);
+
+        // --- County colour legend (bottom-right) -----------------------
+        const legend = L.control({{ position: 'bottomright' }});
+        legend.onAdd = function() {{
+            const div = L.DomUtil.create('div');
+            div.style.cssText = 'background:rgba(255,255,255,0.92);padding:8px 10px;'
+                + 'border-radius:4px;font:12px/1.4 system-ui,sans-serif;'
+                + 'max-height:220px;overflow-y:auto;box-shadow:0 1px 4px rgba(0,0,0,0.2)';
+            div.innerHTML = '<b>County</b><br>' + data.legend.map(e =>
+                '<span style="display:inline-block;width:10px;height:10px;' +
+                'background:' + e.color + ';margin-right:6px;border-radius:50%"></span>' +
+                e.county
+            ).join('<br>');
+            return div;
+        }};
+        legend.addTo(map);
+
+        setTimeout(() => map.invalidateSize(), 200);
+    }}
+    init();
+}})();
+</script>
+"""
+
+class _Html:
+    def __init__(self, s): self._s = s
+    def _repr_html_(self): return self._s
+
+_Html(markers_html)
+```
+
+## Step 3b — Map with density heatmap
+
+The second map shows the same data as a density heatmap, which makes
+regional concentration immediately obvious. The heatmap is rendered
+by [`leaflet.heat`](https://github.com/Leaflet/Leaflet.heat), a small
+Leaflet plugin. The same four base layers as in Step 3a are offered;
+the heatmap is the overlay.
+
+One subtlety worth pointing out: the plugin must be loaded *after*
+core Leaflet, because it extends `L` with `L.heatLayer`. Loading it
+as a parallel `<script>` tag would be a race condition — the plugin
+script might execute before `leaflet.js` is parsed, leaving `L`
+undefined. The pattern below loads the plugin dynamically from
+inside the `<script>` block, so the order is guaranteed.
+
+```{pyodide}
+#| autorun: false
+#| label: render-heatmap
+assert 'df' in dir() and not df.empty, "⚠ Please run the data-loading cell first."
+assert 'markers' in dir(), "⚠ Please run the previous cell (Step 3a) first."
+
+heatmap_map_id = f"ogham-heatmap-{uuid.uuid4().hex[:8]}"
+heatmap_data_var = f"__oghamHeatData_{heatmap_map_id.replace('-', '_')}"
+heatmap_payload = json.dumps([[m["lat"], m["lon"], 0.7] for m in markers])
+
+heatmap_html = f"""
+<div id="{heatmap_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px"></div>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script>window["{heatmap_data_var}"] = {heatmap_payload};</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {{
+    const mapId = "{heatmap_map_id}";
+    const points = window["{heatmap_data_var}"];
+
+    // Load heat plugin dynamically, AFTER core Leaflet is ready.
+    function loadHeatPlugin(cb) {{
+        if (typeof L !== 'undefined' && L.heatLayer) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadHeatPlugin(cb), 50);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js';
+        s.onload = cb;
+        document.head.appendChild(s);
+    }}
+
+    function init() {{
+        const el = document.getElementById(mapId);
+        if (!el || typeof L === 'undefined' || !L.heatLayer) {{
+            return setTimeout(init, 50);
+        }}
+        if (el._leaflet_id) return;
+
+        // --- Base layers (one active at a time) ------------------------
+        // URLs and attributions taken from the leaflet-providers registry:
+        // https://github.com/leaflet-extras/leaflet-providers
+        const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }});
+        const osmHOT = L.tileLayer('https://{{s}}.tile.openstreetmap.fr/hot/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, '
+                + 'Tiles style by <a href="https://www.hotosm.org/" target="_blank">Humanitarian OpenStreetMap Team</a> '
+                + 'hosted by <a href="https://openstreetmap.fr/" target="_blank">OpenStreetMap France</a>'
+        }});
+        const esriImagery = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            maxZoom: 18,
+            attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, '
+                + 'Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+        }});
+        const esriTerrain = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            maxZoom: 13,  // Esri caps World_Terrain_Base at zoom 13
+            attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA, DeLorme, and NPS'
+        }});
+
+        // --- Overlay: density heatmap ----------------------------------
+        const heatLayer = L.heatLayer(points, {{
+            radius: 22, blur: 18, maxZoom: 11
+        }});
+
+        // --- Create map with OSM as default basemap, heatmap on --------
+        const map = L.map(mapId, {{
+            center: [53.0, -8.0], zoom: 7,
+            layers: [osm, heatLayer]
+        }});
+        const bounds = points.map(p => [p[0], p[1]]);
+        if (bounds.length) map.fitBounds(bounds, {{ padding: [30, 30] }});
+
+        // --- Layer control: base layers (radio) + overlays (checkbox) --
+        const baseLayers = {{
+            "OpenStreetMap": osm,
+            "OpenStreetMap.HOT": osmHOT,
+            "Esri.WorldImagery": esriImagery,
+            "Esri.WorldTerrain": esriTerrain
+        }};
+        const overlays = {{
+            "Density heatmap": heatLayer
+        }};
+        L.control.layers(baseLayers, overlays, {{ collapsed: false }}).addTo(map);
+
+        setTimeout(() => map.invalidateSize(), 200);
+    }}
+
+    loadHeatPlugin(init);
+}})();
+</script>
+"""
+
+_Html(heatmap_html)
+```
+
+## Step 4 — Exploring the data
+
+The cells below are a free playground — filter the DataFrame by
+county, compute per-county aggregates, or extend the query yourself.
+
+```{pyodide}
+#| autorun: false
+#| label: explore
+assert 'df' in dir(), "⚠ Please run the data-loading cell first."
+
+# Example: list every Ogham stone from a given county, with coordinates.
+# Change the filter below to explore other counties.
+county_filter = "County Kerry"
+
+subset = (
+    df[df["countyLabel"] == county_filter]
+      [["itemLabel", "siteLabel", "latitude", "longitude"]]
+      .drop_duplicates()
+      .reset_index(drop=True)
+)
+print(f"Ogham stones in {county_filter}: {len(subset)}")
+subset
+```
+
+```{pyodide}
+#| autorun: false
+#| label: explore-stats
+assert 'df' in dir(), "⚠ Please run the data-loading cell first."
+
+# Per-county summary: number of stones and the geographic centroid of
+# their find-spots. The centroid is a quick sanity check — it should
+# fall inside the county on the map.
+summary = (
+    df.groupby("countyLabel")
+      .agg(
+          n_stones=("itemLabel", "nunique"),
+          n_sites=("siteLabel", "nunique"),
+          mean_lat=("latitude", "mean"),
+          mean_lon=("longitude", "mean"),
+      )
+      .sort_values("n_stones", ascending=False)
+)
+summary
+```
+
+---
+
+*Part of an Open Educational Resource series on knowledge graphs and
+linked open data, produced in the context of
+[NFDI4Objects](https://www.nfdi4objects.net/).*

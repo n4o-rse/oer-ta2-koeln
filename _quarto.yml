@@ -15,8 +15,10 @@ website:
         href: index.qmd
       - text: "Jupyter Notebooks Linked Data"
         menu:
-          - text: "Wikidata Ogham Sites (interaktiv)"
+          - text: "Wikidata Ogham Site Diagrams"
             href: notebooks_lod/wikidata-ogham-sites-live.qmd
+          - text: "Wikidata Ogham Sites Leaflet Map"
+            href: notebooks_lod/wikidata-ogham-sites-map-live.qmd
       - text: "Jupyter Notebooks Academic Meta Tool"
         menu:
           - text: "AMT – Academic Meta Tool (interaktiv)"
