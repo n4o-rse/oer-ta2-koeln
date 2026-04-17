@@ -505,6 +505,24 @@ heatmap_html = f"""
         // collapsed:true → Leaflet default, expands on hover / tap
         L.control.layers(baseLayers, overlays, {{ collapsed: true }}).addTo(map);
 
+        // --- Fullscreen fix for the heatmap canvas ---------------------
+        // leaflet.heat draws on a canvas sized at map-add time. When
+        // the container resizes (entering or leaving fullscreen) the
+        // canvas doesn't automatically repaint at the new size, so the
+        // heatmap visually disappears. We hook into the fullscreen
+        // plugin's `fullscreenchange` event, invalidate the map's size
+        // so Leaflet re-measures, and force the heatLayer to redraw.
+        if (hasFullscreen) {{
+            map.on('fullscreenchange', function() {{
+                setTimeout(function() {{
+                    map.invalidateSize();
+                    if (map.hasLayer(heatLayer) && typeof heatLayer.redraw === 'function') {{
+                        heatLayer.redraw();
+                    }}
+                }}, 200);
+            }});
+        }}
+
         setTimeout(() => map.invalidateSize(), 200);
     }}
 
