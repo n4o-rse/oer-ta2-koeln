@@ -31,24 +31,34 @@ keywords:
 # Technische Metadaten
 site-url: &site https://n4o-rse.github.io/oer-001-sparqling-archaeology/
 repo-url: &repo https://github.com/n4o-rse/oer-001-sparqling-archaeology
-doi: XXXXXXX.XXXXXXX
+doi: &doi XXXXXXX.XXXXXXX
 
 # Vorgaben für den Appendix "Zitat"
 csl: assets/csl/internet-archaeology.csl # Verweis auf CSL-Datei mit Zitierformat. Weitere CSL-Dateien im Verzeichnis assets/csl/. Fehlende CSL-Dateien können hier heruntergeladen werden: https://www.zotero.org/styles
 # vgl. https://quarto.org/docs/reference/metadata/citation.html
+# Als Journal-Artikel in der Reihe "Squirrel Papers" deklariert, damit der
+# automatisch generierte BibTeX-Eintrag als @article{...} mit
+# journal = {Squirrel Papers} gerendert wird (konsistent mit anderen
+# Squirrel-Papers-Einträgen in bibliographie.bib).
 citation:
-  type: document
-  container-title: "Open Educational Resource"
-  publisher: Squirrel Papers, via Zenodo / Research Squirrel Engineers Network
+  type: article-journal
+  container-title: "Squirrel Papers"
+  container-title-short: "Squirrel Papers"
+  publisher: "Research Squirrel Engineers Network"
+  volume: 8
+  issue: 6
+  page: §1
+  doi: *doi
   issued: 2026
   url: *site
-  license: "https://creativecommons.org/licenses/by/4.0/"
+  language: en
+  license: "https://creativecommons.org/licenses/by-sa/4.0/"
 
 # Rechtliche Metadaten
-copyright: "Florian Thiery (2026)"
+copyright: "Florian Thiery"
 license:
   type: open-access
-  text: CC BY-SA 4.0 and MIT # # Optionen für Lizensierungsangaben: https://quarto.org/docs/authoring/front-matter.html#license. Wird übernommen in automatisch erstellten Appendix "Lizenz".
+  text: "CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/) and MIT (https://opensource.org/license/mit)" # Optionen für Lizensierungsangaben: https://quarto.org/docs/authoring/front-matter.html#license. Wird übernommen in automatisch erstellten Appendix "Lizenz".
 
 # Spezifische Metadaten für den Export in fachliche Metadatenschemata
 
