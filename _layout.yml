@@ -8,13 +8,13 @@ quarto-required: ">= 1.8.0"
 # vgl. https://quarto.org/docs/reference/formats/html.html
 format:
   html:
-    theme: 
+    theme:
       - default
       - assets/n4o_oer_html.scss
     brand: _brand.yml
     embed-resources: false # embed-resources: true erstellt eine eigenständige HTML-Datei ohne externe Abhängigkeiten für die Übernahme in LMS wie Moodle oder OLAT.
     page-layout: article # Für die Steuerung des Seiten-Layouts vgl. https://quarto.org/docs/output-formats/page-layout.html. Weitere Optionen für die Arbeit mit page-layout: article hier: https://quarto.org/docs/authoring/article-layout.html
-# Einstellungen für Webpage-Funktionen
+    # Einstellungen für Webpage-Funktionen
     code-tools: # Symbol mit Beschriftung .md in der Kopfzeile zum Anzeigen des Markdown-Quellcodes der Seite
       source: true
       toggle: false
@@ -31,13 +31,13 @@ format:
     title-block-style: default
     title-block-categories: true
     smooth-scroll: false # Barrierefreiheit: Vermeidet animiertes scrollen.
-# Styling von Code-Boxen # zum Styling von Codeboxen vgl. https://quarto.org/docs/output-formats/html-code.html
+    # Styling von Code-Boxen # zum Styling von Codeboxen vgl. https://quarto.org/docs/output-formats/html-code.html
     code-overflow: wrap
     code-line-numbers: true
     highlight-style: github
     respect-user-color-scheme: true
     cap-location: bottom
-# Für die Steuerung der Appendices vgl. https://quarto.org/docs/authoring/appendices.html
+    # Für die Steuerung der Appendices vgl. https://quarto.org/docs/authoring/appendices.html
     appendix-style: default
     appendix-cite-as: true
 
@@ -47,21 +47,21 @@ from: markdown+emoji # Für die Nutzung von shortcodes für Emojis in Quarto-Mar
 crossref:
   sec-prefix: Abschnitt
 language:
-  toc-title-document: "Inhaltsverzeichnis"
-  toc-title-website: "Auf dieser Seite"
+  toc-title-document: "Index"
+  toc-title-website: "On this page"
   title-block-affiliation-single: "Institution"
-  title-block-affiliation-plural: "Institutionen"
-  title-block-published: "Veröffentlicht am"
-  title-block-modified: "Zuletzt geändert am"
-  title-block-keywords: "Stichwörter"
-  section-title-appendices: "Anhänge"
-  section-title-footnotes: "Fußnoten"
-  section-title-references: "Bibliographie"
-  section-title-reuse: "Lizenz"
-  section-title-copyright: "Urheber:innen"
-  section-title-citation: "Zitation"
+  title-block-affiliation-plural: "Institutions"
+  title-block-published: "published on"
+  title-block-modified: "modified on"
+  title-block-keywords: "Keywords"
+  section-title-appendices: "Attachments"
+  section-title-footnotes: "Footnotes"
+  section-title-references: "Bibliography"
+  section-title-reuse: "License"
+  section-title-copyright: "Authors"
+  section-title-citation: "Citation"
   appendix-attribution-bibtex: "BibTeX"
-  appendix-attribution-cite-as: "Kurzzitat"
+  appendix-attribution-cite-as: "Citation"
   repo-action-links-edit: "Seite bearbeiten"
   repo-action-links-source: "Quelltext aufrufen"
   repo-action-links-issue: "Problem melden"

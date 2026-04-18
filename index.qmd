@@ -77,21 +77,13 @@ Viele Hinweise dazu finden sie im [Quarto-Guide](https://quarto.org/docs/guide/)
 
 <!-- Der Ort für weiterführende Quellen und Informationen. Wenn Sie Fußnoten oder Literaturverweise im Text eingefügt haben, werden die bibliographischen Angaben automatisch in weiteren Abschnitten generiert und in das Dokument eingefügt. -->
 
-## Nachnutzen {.appendix .unnumbered}
+## Re-Use {.appendix .unnumbered}
 
-Alle sind herzlich eingeladen, diesen Baustein und die zugehörige Copyleft-Lizenz zu nutzen, um ihr Wissen und Expertise in die Verbesserung und Aktualisierung einzubringen. Alle können die Inhalte erweitern oder überarbeiten, zum Beispiel um Anwendungsszenarien und Nutzungskontexte zu erweitern.
+:link: [This module on GitHub]({{< meta site-url >}}) 
 
-Unser Wunsch ist ein lebendiges, stetig wachsendes Dokument, das sich durch die Beiträge vieler verändert - im Einklang mit eines sich wandelnden Umfelds. Wir freuen uns im Falle einer Überarbeitung über eine kurze Notiz – das ist aber selbstverständlich keine Pflicht.
+:link: [Quarto-Sourcecode of this module]({{< meta repo-url >}})
 
-<!-- Verweise auf Website und Repository werden in _oer_metadata.yml global festgelegt. Wenn die OER nicht in einem git-Repository gehostet oder online bereitgestellt werden, können die folgenden zwei Zeilen gelöscht werden. -->
-
-:link: [Dieser Baustein als Website]({{< meta site-url >}}) 
-
-:link: [Quarto-Quellcode dieses Bausteins]({{< meta repo-url >}})
-
----
-
-Dieses Skript nutzt das [OER-Skript-Template von NFDI4Objects](https://github.com/nfdi4objects/oer-template-skript)
+This module uses the [OER Template of NFDI4Objects](https://github.com/nfdi4objects/oer-template-skript)
 
 ## Disclaimer: Einsatz von LLM {.appendix .unnumbered}
 

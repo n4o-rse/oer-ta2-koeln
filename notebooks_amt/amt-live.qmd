@@ -1,5 +1,5 @@
 ---
-title: "Academic Meta Tool (AMT) – Interaktiv"
+title: "Academic Meta Tool (AMT) – Interactive"
 format: live-html
 engine: knitr
 pyodide:
@@ -11,20 +11,79 @@ pyodide:
 
 {{< include ../_extensions/r-wasm/live/_knitr.qmd >}}
 
-## Über das Academic Meta Tool
+## About this notebook
 
-Dieses interaktive Notebook ist eine vollständige Python-Portierung des
-[Academic Meta Tool (AMT)](http://academic-meta-tool.xyz/), ursprünglich in
-JavaScript (N3.js + vis.js) geschrieben.
+This interactive notebook is a full Python port of the
+[Academic Meta Tool (AMT)](http://academic-meta-tool.xyz/), originally
+written in JavaScript using N3.js and vis.js. It demonstrates how an
+archaeological domain expert can encode *graded* (fuzzy) attributions
+between finds, figure types, potters and find contexts as a small
+ontology, and then let a reasoner derive new weighted relations from
+the asserted ones.
+
+Everything on this page runs **entirely in your browser** via
+[Pyodide](https://pyodide.org/) and
+[quarto-live](https://r-wasm.github.io/quarto-live/). No server, no
+local Python installation, no account – the code cells are real,
+editable, and re-executable.
 
 ::: {.callout-note}
-Diese Demo verwendet das **Potter Attribution Example** als feste Beispiel-Ontologie.
-Für eigene TTL-Dateien steht das [Jupyter Notebook](amt-python.ipynb) zur Verfügung.
+On first load, your browser downloads the Python runtime (Pyodide,
+~10 MB) plus `rdflib` and `pyvis` via `micropip`. Please allow a
+moment for it to initialise.
 :::
+
+### Why this example
+
+The accompanying dataset, `PotterAttributionExample.ttl`, is a
+minimal but faithful version of the **Potter Attribution** use case
+that motivated AMT in the first place. Roman-period *terra sigillata*
+sherds carry stamped or moulded figure types; some figure types are
+characteristic of a particular potter, others are shared across
+several workshops. Attribution is therefore rarely certain – it is
+a matter of degree. AMT encodes exactly that: every relation carries
+a weight in the interval [0, 1], and weights propagate along
+role-chain axioms under a user-chosen fuzzy logic (Łukasiewicz,
+Product, or Gödel).
+
+### What you'll learn
+
+1. How AMT's tiny RDF vocabulary (`amt:Concept`, `amt:Role`,
+   `amt:weight`, `amt:RoleChainAxiom`, …) models a fuzzy attribution
+   graph.
+2. How to parse such a graph with `rdflib` and rebuild the
+   concept/role/node/edge/axiom structures that AMT's reasoner needs.
+3. How `RoleChainAxiom` and `InverseAxiom` derive new weighted edges,
+   and how `DisjointAxiom` and `SelfDisjointAxiom` flag inconsistencies.
+4. How the same data looks with and without reasoning, visualised
+   interactively with `pyvis`.
+
+### Data-context notes
+
+- Weights on the sample edges (0.33, 0.5, 0.6, 0.83, 1.0, …) are
+  illustrative, not empirically derived. They exist to make the
+  different fuzzy logics produce visibly different results.
+- The ontology uses the reified-statement pattern
+  (`rdf:subject` / `rdf:predicate` / `rdf:object` / `amt:weight`) so
+  that each edge is itself an RDF resource and can carry its own
+  weight literal. This is how the original AMT serialises role
+  instances and the parser in Step 2 reflects that choice.
+- Inferred edges rendered in the graph are marked in **red dashed**
+  style and are *not* round-tripped back into the source TTL – they
+  are reasoner output, not data.
+
+### Tooling notes
+
+- The browser variant uses `pyodide.http` substitutes for the usual
+  Python HTTP stack and `micropip` for non-bundled packages. No
+  `requests`, no `SPARQLWrapper` on this page.
+- For analysing your own TTL files (file upload, larger graphs,
+  editing workflows), use the companion
+  [Jupyter notebook](amt-python.ipynb) locally in JupyterLab or VS Code.
 
 ---
 
-## Schritt 1 – Setup
+## Step 1 – Setup
 
 ```{pyodide}
 #| label: amt-setup
@@ -46,12 +105,22 @@ AMT = Namespace("http://academic-meta-tool.xyz/vocab#")
 amt = None; concepts = {}; roles = {}
 nodes = {}; edges = []; axioms = []; PREFIX = ""
 
-print("✓ Bibliotheken geladen")
+print("✓ Libraries loaded")
 ```
 
 ---
 
-## Schritt 2 – Daten laden & Engine
+## Step 2 – Load data & reasoning engine
+
+The TTL file is shipped with this page via quarto-live's `resources:`
+frontmatter entry and mounted into Pyodide's virtual file system, so
+`Path(...).read_text()` just works – no network call needed.
+
+`load_amt()` turns the RDF graph into five plain-Python structures
+(concepts, roles, nodes, edges, axioms) that the reasoner then
+operates on. Keeping the reasoner pure-Python (no `OWL`, no
+`rdflib` inference plug-ins) is deliberate: it matches the original
+AMT behaviour exactly and makes the fuzzy-logic choices explicit.
 
 ```{pyodide}
 #| label: amt-core
@@ -162,7 +231,7 @@ def check_consistency(edges, axioms):
                     violations.append(f"SelfDisjointAxiom: {_local(e['from'])}")
     return (len(violations)==0, violations)
 
-# Datei aus VFS laden
+# Load file from the virtual file system
 ttl_str  = Path(TTL_FILE).read_text(encoding="utf-8")
 amt      = load_amt(ttl_str)
 concepts = amt["concepts"]
@@ -173,7 +242,7 @@ axioms   = amt["axioms"]
 if nodes:
     PREFIX = next(iter(nodes.values()))["id"].rsplit("/", 1)[0] + "/"
 
-print(f"✓ {TTL_FILE} geladen")
+print(f"✓ {TTL_FILE} loaded")
 print(f"  {len(concepts)} Concepts | {len(roles)} Roles | "
       f"{len(nodes)} Nodes | {len(edges)} Edges | {len(axioms)} Axioms")
 print(f"  Namespace: {PREFIX}")
@@ -181,7 +250,11 @@ print(f"  Namespace: {PREFIX}")
 
 ---
 
-## Schritt 3 – Visualisierung & Export
+## Step 3 – Visualisation & export
+
+`pyvis` writes a full self-contained HTML document to the Pyodide
+VFS, which we then read back and wrap in an iframe so each graph on
+the page is its own sandboxed render.
 
 ```{pyodide}
 #| label: amt-vis
@@ -199,7 +272,7 @@ _PALETTE = [
 ]
 
 def show_amt(nodes, edges, concepts, reasoning=False, axioms=None, height="560px", cell_id="basic"):
-    assert amt is not None, "⚠ Zuerst Schritt 2 ausführen."
+    assert amt is not None, "⚠ Please run Step 2 first."
     display_edges = do_reasoning(edges, axioms or []) if reasoning else edges
     net = Network(height=height, width="100%", directed=True,
                   bgcolor="#ffffff", cdn_resources="in_line", notebook=False)
@@ -231,63 +304,77 @@ def show_amt(nodes, edges, concepts, reasoning=False, axioms=None, height="560px
     html = Path("/tmp/amt.html").read_text()
     h_px = int(height.replace("px","")) + 20
     html_esc = html.replace("&", "&amp;").replace('"', "&quot;")
-    import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         ipy_display(HTML(
             f'<iframe srcdoc="{html_esc}" width="100%" height="{h_px}px" '
             f'style="border:1px solid #ddd;border-radius:4px;margin-top:6px"></iframe>'
         ))
-    print(f"✓ {len(nodes)} Knoten, {len(display_edges)} Kanten")
+    print(f"✓ {len(nodes)} nodes, {len(display_edges)} edges")
 
-print("✓ Visualisierung geladen")
+print("✓ Visualisation loaded")
 ```
 
 ---
 
-## 4 – Graph ohne Reasoning
+## Step 4 – Graph without reasoning
+
+The raw asserted edges, straight from the TTL file – no inference
+applied. Node colour encodes the concept, edge width encodes the
+weight.
 
 ```{pyodide}
 #| label: amt-graph-basic
 #| autorun: false
-assert amt is not None, "⚠ Bitte zuerst Schritte 1–3 ausführen."
+assert amt is not None, "⚠ Please run Steps 1–3 first."
 show_amt(nodes, edges, concepts, reasoning=False, cell_id="basic")
 ```
 
-
 ---
 
-## 5 – Graph mit Reasoning
+## Step 5 – Graph with reasoning
 
-Gefolgerte Kanten als **rote gestrichelte Pfeile**.
+Inferred edges are rendered as **red dashed** arrows. The two role
+chains declared in the ontology (`RCA0001`, `RCA0002`) both use
+**Product Logic**, so a chain of weights 0.5 and 0.6 becomes an
+inferred edge of weight 0.30. Feel free to edit the TTL file and
+switch one of them to `amt:LukasiewiczLogic` or `amt:GoedelLogic` to
+see how the derived weights change.
 
 ```{pyodide}
 #| label: amt-graph-reasoning
 #| autorun: false
-assert amt is not None, "⚠ Bitte zuerst Schritte 1–3 ausführen."
+assert amt is not None, "⚠ Please run Steps 1–3 first."
 reasoned = do_reasoning(edges, axioms)
 inferred = [e for e in reasoned if e.get("inferred")]
-print(f"Original: {len(edges)} | Gefolgert: {len(inferred)}")
+print(f"Original: {len(edges)} | Inferred: {len(inferred)}")
 display(pd.DataFrame([
-    {"Von": _local(e["from"]), "Rolle": _local(e["role"]),
-     "Nach": _local(e["to"]), "Gewicht": round(e["weight"], 4)}
+    {"From": _local(e["from"]), "Role": _local(e["role"]),
+     "To": _local(e["to"]), "Weight": round(e["weight"], 4)}
     for e in inferred
 ]))
 show_amt(nodes, edges, concepts, reasoning=True, axioms=axioms, cell_id="reasoning")
 ```
 
-
 ---
 
-## 6 – Konsistenzprüfung
+## Step 6 – Consistency check
+
+`DisjointAxiom` and `SelfDisjointAxiom` express what *cannot* be
+simultaneously true in the graph (for example: the same edge holding
+under two mutually exclusive roles, or a role being used reflexively
+when it mustn't be). The Potter Attribution example ontology does
+not currently declare any integrity axioms, so the check returns
+consistent – add one to the TTL file to watch a violation show up
+here.
 
 ```{pyodide}
 #| label: amt-consistency
 #| autorun: false
-assert amt is not None, "⚠ Bitte zuerst Schritte 1–3 ausführen."
+assert amt is not None, "⚠ Please run Steps 1–3 first."
 ok, violations = check_consistency(edges, axioms)
 if ok:
-    print("✓ Graph ist konsistent.")
+    print("✓ Graph is consistent.")
 else:
     for v in violations: print(f"  • {v}")
 ```
@@ -295,7 +382,17 @@ else:
 ---
 
 ::: {.callout-tip}
-**Eigene TTL-Dateien analysieren?**
-Das [Jupyter Notebook](amt-python.ipynb) unterstützt den Upload beliebiger TTL-Dateien
-und läuft lokal in VS Code oder JupyterLab.
+**Want to analyse your own TTL files?**
+The [Jupyter notebook companion](amt-python.ipynb) supports uploading
+arbitrary TTL files and runs locally in VS Code or JupyterLab with
+the full scientific Python stack.
 :::
+
+---
+
+*This notebook is part of an Open Educational Resource built with the
+[NFDI4Objects OER Quarto template](https://github.com/nfdi4objects/oer-template-skript).
+The Academic Meta Tool was originally developed by Martin Unold and
+Florian Thiery at i3mainz (2017) and is now maintained by Allard Mees
+and Florian Thiery at
+[LEIZA](https://www.leiza.de/) within NFDI4Objects.*

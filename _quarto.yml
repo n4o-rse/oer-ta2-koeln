@@ -11,7 +11,7 @@ website:
   title: "Knowledge Graphs in Action"
   navbar:
     left:
-      - text: "Skript"
+      - text: "Introduction"
         href: index.qmd
       - text: "Jupyter Notebooks: LOD"
         menu:
@@ -33,7 +33,7 @@ website:
             href: notebooks_lod/local_ttl-campanian-ignimbrite-sites-live.qmd
       - text: "Jupyter Notebooks: AMT"
         menu:
-          - text: "AMT – Academic Meta Tool (interaktiv)"
+          - text: "Academic Meta Tool - Potter Attribution Example"
             href: notebooks_amt/amt-live.qmd
       - text: "SPARQLing Unicorn QGIS Plugin"
         menu:
