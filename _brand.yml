@@ -45,35 +45,21 @@ color:
   danger: fehler
 
 typography:
+# Schriftarten DSGVO-konform über https://fonts.bunny.net/ geladen
   fonts:
-    - family: "PT Sans"
-      source: file
-# Lokal eingebundene Schriftart über /assets/fonts/
-      files:
-        - path: assets/fonts/pt_sans/pt-sans-v18-latin_latin-ext-regular.woff2
-          weight: 400
-          style: normal
-        - path: assets/fonts/pt_sans/pt-sans-v18-latin_latin-ext-italic.woff2
-          weight: 400
-          style: italic
-        - path: assets/fonts/pt_sans/pt-sans-v18-latin_latin-ext-700.woff2
-          weight: 700
-          style: normal
-        - path: assets/fonts/pt_sans/pt-sans-v18-latin_latin-ext-700italic.woff2
-          weight: 700
-          style: italic
-# Schriftart DSGVO-konform über https://fonts.bunny.net/ geladen
+    - family: Fira Sans
+      source: bunny
     - family: Noto Sans Mono
       source: bunny
 # Globale typographische Vorgaben
   base: 
-    family: PT Sans
+    family: Fira Sans
     size: 1.1rem
     weight: normal
     line-height: 1.4
   headings:
-    family: PT Sans
-    weight: 500
+    family: Fira Sans
+    weight: 700
     style: normal
     line-height: 1.5
     color: text
