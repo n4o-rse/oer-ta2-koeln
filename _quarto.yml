@@ -8,7 +8,7 @@ project:
     - unicorn/unicorn_arno_sites.png
 
 website:
-  title: "Knowledge Graphs in Action"
+  title: "SPARQLing Archaeology"
   navbar:
     left:
       - text: "Introduction"

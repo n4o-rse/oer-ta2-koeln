@@ -1,11 +1,11 @@
 # Beschreibende Metadaten
 abstract: |
-  OER für die Lehrveranstaltung in Köln ...
+  This Open Educational Resource introduces students to the practical use of archaeological Knowledge Graphs. Through browser-executable Python notebooks, learners query Wikidata and the NFDI4Objects Knowledge Graph with SPARQL, analyse the results, and visualise them on interactive maps. The course also covers fuzzy reasoning over RDF graphs with the Academic Meta Tool (AMT) and the integration of SPARQL queries into QGIS via the SPARQLing Unicorn plugin. No local installation is required — all notebooks run directly in the browser.
 abstract-title: "Abstract"
 description: |
-  Kurzbeschreibung der Inhalte des Skripts.
+  A hands-on course introducing archaeologists to querying, analysing, and visualising Linked Open Data with SPARQL, Python, and QGIS, using Wikidata and the NFDI4Objects Knowledge Graph as primary examples.
 funding: |
-  Optionale Angaben zur Förderung, in deren Rahmen das Skript erstellt wurde
+  NFDI4Objects Projektnummer
 # vgl. https://quarto.org/docs/authoring/front-matter.html#funding
 # Open Graph Metadaten für HTML-Header: https://quarto.org/docs/websites/website-tools.html#open-graph
 website:

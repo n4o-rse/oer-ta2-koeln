@@ -1,7 +1,7 @@
 ---
-title: "Knowledge Graphs in Action: Beispiele aus NFDI4Objects Task Area 2"
-subtitle: "Beispiele aus NFDI4Objects Task Area 2, TRAIL 2.5 und 2.8"
-lang: de
+title: "SPARQLing Archaeology: Knowledge Graphs, Wikidata, and QGIS in Practice"
+subtitle: "Examples from NFDI4Objects Task Area 2, TRAIL 2.5 and 2.8"
+lang: en
 date: 2026-04-10
 date-format: "DD.MM.YYYY"
 date-modified: last-modified
@@ -16,39 +16,49 @@ toc-expand: true
 toc-title: |
   ![](img/CC_SemanticLOD_Logo.png)
 toc-location: right
-number-sections: true # Auf false setzen, wenn keine automatische Abschnittsnummerierung gewünscht
+number-sections: true # Set to false if no automatic section numbering is desired
 lightbox: true
 crossref: 
-  lof-title: "Liste der Abbildungen"
-# Für CI-build in github
+  lof-title: "List of Figures"
+# For CI build on GitHub
 execute:
   freeze: auto
 ---
 
-## Einleitung
+## Introduction
 
-<!-- Holen Sie die Lernenden in diesem Absatz ab. Stellen Sie in wenigen Sätzen, mit Beispielen und Fragen das Thema des Bausteins vor. -->
-Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet, consetetur sadipscing elitr, sed diam nonumy eirmod tempor invidunt ut labore et dolore magna aliquyam erat, sed diam voluptua. At vero eos et accusam et justo duo dolores et ea rebum. Stet clita kasd gubergren, no sea takimata sanctus est Lorem ipsum dolor sit amet.
+<!-- Engage the learners in this paragraph. Introduce the topic of the module in a few sentences, with examples and questions. -->
+How can we find out at which sites in Ireland Ogham stones have been documented? How can the production of Roman Samian ware be mapped across Europe — and how reliable is the attribution of a specific vessel to an individual potter? Questions of this kind can today be addressed directly to open *Knowledge Graphs* such as [Wikidata](https://www.wikidata.org/) or the [NFDI4Objects Knowledge Graph](https://www.nfdi4objects.net/). This OER module is a hands-on course introducing archaeologists to querying, analysing, and visualising Linked Open Data with **SPARQL**, **Python**, and **QGIS**, using Wikidata and the NFDI4Objects Knowledge Graph as primary examples. All notebooks run directly in the browser, without any local installation. In addition, *fuzzy reasoning* with the [Academic Meta Tool (AMT)](notebooks_amt/amt-live.qmd) and the integration of SPARQL into QGIS via the [SPARQLing Unicorn Plugin](unicorn/sparql-queries.qmd) are introduced.
 
-### Lernziele {.kolophon .unnumbered .unlisted}
+### Learning Objectives {.kolophon .unnumbered .unlisted}
 
-<!-- Idealerweise beziehen sie sich in dieser Aufzählung auf die Lernzielmatrix zum Themenbereich Forschungsdatenmanagement (FDM) für die Zielgruppen Studierende, PhDs und Data Stewards.^[Petersen, B., Engelhardt, C., Hörner, T., Jacob, J., Kvetnaya, T., Mühlichen, A., Schranzhofer, H., Schulz, S., Slowig, B., Trautwein-Bruns, U., Voigt, A., & Wiljes, C. (2023). Lernzielmatrix zum Themenbereich Forschungsdatenmanagement (FDM) für die Zielgruppen Studierende, PhDs und Data Stewards. Zenodo. [https://doi.org/10.5281/zenodo.8010617](https://doi.org/10.5281/zenodo.8010617)] -->
+<!-- Ideally, refer in this list to the Learning Objectives Matrix on Research Data Management (RDM) for the target groups of students, PhDs, and data stewards.^[Petersen, B., Altemeier, F., Boße, S., Dalby, M., Düvel, N., Engelhardt, C., Fichtner, M., Hastik, C., Haugwitz, J.-M., Jacob, J., Koch, K., Kuntz, A., Manske, A., Mühlichen, A., Murcia Serra, J., Ortmeyer, J., Richter, M., Schranzhofer, H., Slowig, B., Trautwein-Bruns, U., Urbaum, D., Voigt, A., Werner, S., Wiljes, C., & Zollitsch, L. (2025). Lernzielmatrix zum Themenbereich Forschungsdatenmanagement (FDM) (Version 3). Zenodo. [https://doi.org/10.5281/zenodo.15025246](https://doi.org/10.5281/zenodo.15025246)] -->
 
-In diesem Skript lernen sie [@petersen2023]:
+In this module you will learn [@petersen_lernzielmatrix_2025]:
 
-- Kompetenz #.#
+- to understand and articulate the core principles of **Linked Data**, **RDF**, and **SPARQL**;
+- to query public Knowledge Graphs (**Wikidata**, **NFDI4Objects KG**) with SPARQL and to process the results programmatically in Python;
+- to load and analyse local **Turtle (TTL)** files with `rdflib`;
+- to visualise query results as **diagrams** and as interactive **Leaflet** maps;
+- to apply *fuzzy reasoning* over RDF graphs using the **Academic Meta Tool (AMT)** and to model simple attribution scenarios;
+- to integrate SPARQL queries into a GIS workflow via the **SPARQLing Unicorn QGIS Plugin**.
 
-### Vorwissen {.kolophon .unnumbered .unlisted}
+### Prerequisites {.kolophon .unnumbered .unlisted}
 
-Für das Verständnis dieses Skripts werden vorausgesetzt:
+For an adequate understanding of this module, the following is assumed:
 
-- Voraussetzung
+- basic familiarity with **Python** (reading and adapting short scripts, working with lists and dictionaries);
+- a general understanding of **structured data** (tables, CSV, JSON);
+- a basic grasp of **URIs/URLs** and of the Web as a data space;
+- elementary knowledge of archaeological material culture (Roman Samian ware, early medieval Ogham inscriptions) — helpful but not essential, as each notebook provides a short contextual introduction.
 
-<!-- Versuchen sie so detailliert wie möglich die Voraussetzungen für das Verständnis des Bausteins aufzuzählen. Geben sie Hinweise, wo die Lernenden entsprechende/s Kompetenzen/Wissen erwerben können. Damit sind nicht nur Kenntnisse im Forschunsdatenmanagement gemeint sondern auch Grund-Kompetenzen aus der Data Literacy und methodisch-praktische Kompetenzen gemeint. -->
+<!-- Try to list the prerequisites for understanding the module as specifically as possible. Provide pointers on where learners can acquire the relevant competencies/knowledge. This refers not only to research data management skills, but also to general data literacy and methodological-practical competencies. -->
 
-### Bezug zum Forschungsdatenlebenszyklus {.kolophon .unnumbered .unlisted}
+Learners unfamiliar with the application of Semantic Web technologies to archaeology will find accessible introductions in [@isaksen_archaeology_2011] and [@thiery_semantic_2013], and a comprehensive survey of current practice in [@schmidt_practices_2022].
 
-<!-- Erläutern sie kurz, welche Rolle das Thema im Bezug auf die Phasen im Forschungsdatenzyklus spielen.
+### Relation to the Research Data Lifecycle {.kolophon .unnumbered .unlisted}
+
+<!-- Briefly explain which role the topic plays with regard to the phases of the research data lifecycle.
 
 -   planen und projektieren
 -   sammeln und erfassen
@@ -58,60 +68,129 @@ Für das Verständnis dieses Skripts werden vorausgesetzt:
 -   wiederverwenden und zitieren
 -->
 
-## Inhaltliche Abschnitte
+This module focuses primarily on the later phases of the research data lifecycle. In the phase **enrich and analyse**, SPARQL queries and fuzzy reasoning allow existing Knowledge Graphs to be interrogated, aggregated, and combined with local datasets [@tolle_fuzziness_2026]. In the phase **share, publish, and discover**, the module illustrates how openly published Linked Data — both from Wikidata and from domain-specific infrastructures such as the NFDI4Objects KG — becomes discoverable and reusable through standardised interfaces (SPARQL endpoints, Turtle files) [@schmidt_practices_2022; @thiery_stones_2026]. Finally, the phase **re-use and cite** is addressed by demonstrating how persistent identifiers (Wikidata QIDs, Pleiades URIs) support the unambiguous citation of entities across datasets and publications [@thiery_fair4rs_2025].
+
+## Content
 
 <!-- 
 
-Hier ist der Raum für die Inhalte des Skripts. Nutzen sie die vielfältigen Möglichkeiten, Inhalte mit Quarto-Markdown zu gestalten. Ersetzen Sie die Überschriften "Inhaltliche Abschnitte" und "Abschnitt-Überschrift".
+This is the space for the content of the module. Use the rich possibilities of Quarto-Markdown to design the content. Replace the headings "Inhaltliche Abschnitte" and "Abschnitt-Überschrift".
 
-Viele Hinweise dazu finden sie im [Quarto-Guide](https://quarto.org/docs/guide/)
+Extensive guidance is available in the [Quarto Guide](https://quarto.org/docs/guide/)
 
 -->
 
+### A Short Primer on Linked Data and Wikidata
+
+**Linked Data** is a set of principles for publishing structured data on the Web so that it can be interlinked and queried across sources. At its core sits the **Resource Description Framework (RDF)**: every statement is expressed as a *triple* of the form `subject – predicate – object`, where each element is identified by an **IRI** (a Web-scale identifier) or, in the case of objects, a literal value. Collections of such triples form a **Knowledge Graph**, which can be queried using the **SPARQL** query language. For a detailed discussion of the uptake of Semantic Web technologies in archaeology, see [@isaksen_archaeology_2011]; an early worked example from the domain of Roman potters' stamps is given in [@thiery_semantic_2013].
+
+**Wikidata** is the largest openly available general-purpose Knowledge Graph. It is collaboratively edited, multilingual, and exposes a public SPARQL endpoint at <https://query.wikidata.org/>. For the archaeological and cultural heritage communities, Wikidata serves both as a source of authoritative identifiers — for places, persons, periods, and objects — and as a target for linking domain-specific data. A comprehensive survey of archaeological Linked Open Data practice and its realisation in Wikidata is provided by [@schmidt_practices_2022]; concrete interdisciplinary case studies combining Wikidata and a dedicated Wikibase are discussed in [@thiery_stones_2026].
+
+Alongside Wikidata, this module uses the **NFDI4Objects Knowledge Graph** — a domain-specific Knowledge Graph for material culture and archaeology — as well as small, self-contained TTL files that illustrate how the same techniques apply to local datasets [@thiery_research_2025].
+
+### How this Module is Organised
+
+The module is divided into three sections, each accessible from the navigation bar above. Every notebook in the first two sections is executable directly in the browser via [quarto-live](https://r-wasm.github.io/quarto-live/) and Pyodide, so no local Python installation is required.
+
+### Jupyter Notebooks: Querying and Analysing Knowledge Graphs
+
+This section contains browser-executable notebooks that demonstrate how to query public SPARQL endpoints, transform the results into Python data structures, and visualise them as diagrams or interactive maps. The notebooks progress from Wikidata, via the NFDI4Objects Knowledge Graph, to a fully self-contained local TTL file — so that you can see how the same patterns apply across different data sources and scales. The Ogham case study is described in detail in [@thiery_linked_2023] and [@thiery_sparqling_2022]; the Samian ware case study builds on [@mees_bridging_2026]; the Campanian Ignimbrite example is drawn from [@thiery_stones_2026].
+
+Available notebooks:
+
+- [Wikidata Ogham Site Diagrams](notebooks_lod/wikidata-ogham-sites-live.qmd) — a first SPARQL query against Wikidata, returning Ogham stone sites and plotting them as a diagram.
+- [Wikidata Ogham Sites Leaflet Map](notebooks_lod/wikidata-ogham-sites-map-live.qmd) — the same data, visualised as an interactive Leaflet map.
+- [NFDI4Objects KG Ogham Sites Diagrams](notebooks_lod/n4okg-ogham-sites-county-live.qmd) — aggregating Ogham sites by county from the NFDI4Objects KG.
+- [NFDI4Objects KG Ogham Sites Leaflet Map](notebooks_lod/n4okg-ogham-sites-map-live.qmd) — mapping NFDI4Objects data interactively.
+- [NFDI4Objects KG Samian Production Centres](notebooks_lod/n4okg-samian-production-centres-live.qmd) — querying Roman Samian ware production sites.
+- [NFDI4Objects KG Samian Discovery Sites & Pleiades](notebooks_lod/n4okg-samian-discovery-sites-live.qmd) — linking discovery sites to the Pleiades gazetteer.
+- [NFDI4Objects KG Samian Potter Activity](notebooks_lod/n4okg-samian-potter-activity-live.qmd) — exploring potter activity in the Samian ware dataset.
+- [Local TTL File: Campanian Ignimbrite Sites](notebooks_lod/local_ttl-campanian-ignimbrite-sites-live.qmd) — loading a local Turtle file into the browser and querying it with `rdflib`.
+
+### Jupyter Notebooks: AMT
+
+The **Academic Meta Tool (AMT)** is a lightweight framework for *fuzzy reasoning* over RDF graphs. It allows the definition of axioms such as `RoleChain`, `Inverse`, and `Disjoint`, and their evaluation under different fuzzy logics (Łukasiewicz, Product, Gödel). This is particularly useful in archaeology, where classifications, attributions, and identifications are rarely crisp. The modelling rationale behind AMT — and its application to Samian ware within the NFDI4Objects consortium — is discussed in [@tolle_fuzziness_2026].
+
+The notebook in this section walks through a concrete worked example:
+
+- [Academic Meta Tool — Potter Attribution Example](notebooks_amt/amt-live.qmd) — a fuzzy reasoning scenario on attributing Samian ware to a specific potter, using the `PotterAttributionExample.ttl` dataset. The notebook also demonstrates graph visualisation with `pyvis` and export to TTL and Cypher.
+
+### SPARQLing Unicorn QGIS Plugin
+
+The [SPARQLing Unicorn QGIS Plugin](https://github.com/sparqlunicorn/sparqlunicornGoesGIS) brings SPARQL queries directly into the QGIS desktop environment, so that results from Knowledge Graphs can be geocoded and styled like any other GIS layer. The design rationale and the broader tooling ecosystem of the Research Squirrel Engineers Network are described in [@thiery_fair4rs_2025] and [@thiery_research_2025]. This section collects ready-to-use example queries that complement the browser notebooks above.
+
+- [QGIS Plugin: SPARQL query examples](unicorn/sparql-queries.qmd) — a curated set of queries for use with the plugin.
+
+![](unicorn/unicorn_arno_sites.png){width=480 fig-alt="Screenshot of the SPARQLing Unicorn QGIS Plugin showing archaeological sites"}
+
 ## Literature
 
-[@petersen2023]
+The works cited throughout this module are listed below with a brief note on what each contribution offers. Full bibliographic details are rendered in the automatically generated references section at the end of this document.
+
+- **[@isaksen_archaeology_2011]** — A PhD thesis that surveys the early uptake of Semantic Web technologies in archaeology and distinguishes two competing visions: Mixed-Source Knowledge Representation (MSKR) and Linked Open Data (LOD). Recommended as a conceptual entry point for understanding why archaeological Linked Data looks the way it does today.
+- **[@thiery_semantic_2013]** — An early German-language case study on applying Linked Data to Roman potters' stamps; useful as a concrete, small-scale example of modelling archaeological evidence as RDF.
+- **[@schmidt_practices_2022]** — A broad survey of Linked Open Data practice in archaeology, with a particular focus on how Wikidata is used as a hub for archaeological identifiers. The recommended starting point for readers new to the field.
+- **[@thiery_sparqling_2022]** — A methodological paper on publishing Irish Ogham stones as Linked Open Data, including the SPARQL queries that underpin the Ogham notebooks in this course.
+- **[@thiery_linked_2023]** — A follow-up paper to [@thiery_sparqling_2022] that discusses how heterogeneous Ogham datasets can be interlinked across repositories; directly relevant to the NFDI4Objects Ogham notebooks.
+- **[@thiery_research_2025]** — Presents the Research Squirrel Engineers Network and its FAIRification tooling for archaeology and the geosciences, including the SPARQLing Unicorn Toolkit; sets the context for the QGIS section of this course.
+- **[@thiery_fair4rs_2025]** — A best-practice case study on applying FAIR4RS principles to computational archaeology, with concrete examples from Ogham stones and Campanian Ignimbrite sites; useful for understanding the reproducibility framework behind this OER.
+- **[@thiery_stones_2026]** — An interdisciplinary paper showing how Wikidata and a dedicated Wikibase can be combined to model archaeological, archaeometric, and volcanological data together; the data source for the Campanian Ignimbrite notebook.
+- **[@mees_bridging_2026]** — A paper on using Wikidata as a linking hub for Roman Samian ware data across multiple archaeological databases; the conceptual backbone of the Samian ware notebooks.
+- **[@tolle_fuzziness_2026]** — Introduces the Academic Meta Tool (AMT) and its fuzzy modelling approach for ambiguous archaeological relations, with Samian ware as a worked example; essential reading for the AMT section of this course.
+- **[@petersen_lernzielmatrix_2025]** — The reference learning-objectives matrix for Research Data Management in Germany (Version 3); used here to anchor the module's learning objectives within a broader didactic framework.
 
 
-## Weiterführende Quellen und Informationen {.appendix .unnumbered}
+## Further Sources and Information {.appendix .unnumbered}
 
-<!-- Der Ort für weiterführende Quellen und Informationen. Wenn Sie Fußnoten oder Literaturverweise im Text eingefügt haben, werden die bibliographischen Angaben automatisch in weiteren Abschnitten generiert und in das Dokument eingefügt. -->
+<!-- The place for further sources and information. If you have inserted footnotes or literature references in the text, the bibliographic details will be generated automatically in additional sections and added to the document. -->
+
+For readers who wish to explore the topics of this module further:
+
+- **Linked Data in archaeology** — a foundational discussion is provided by [@isaksen_archaeology_2011], and a recent survey of community practice by [@schmidt_practices_2022].
+- **Wikidata and Wikibase for the humanities** — interdisciplinary case studies are presented in [@thiery_stones_2026] and, for Samian ware specifically, in [@mees_bridging_2026].
+- **Uncertainty and fuzzy modelling** — the theoretical grounding for AMT and related approaches is discussed in [@tolle_fuzziness_2026].
+- **Research Software Engineering for archaeology** — the tooling ecosystem underlying this OER, including the SPARQLing Unicorn Toolkit, is documented in [@thiery_fair4rs_2025] and [@thiery_research_2025].
+- **Quarto** — the publishing system used for this OER: <https://quarto.org/docs/guide/>.
+- **quarto-live** — the extension enabling browser-executable Python: <https://r-wasm.github.io/quarto-live/>.
+- **NFDI4Objects** — the research data infrastructure context of this module: <https://www.nfdi4objects.net/>.
 
 ## Re-Use {.appendix .unnumbered}
 
 :link: [This module on GitHub]({{< meta site-url >}}) 
 
-:link: [Quarto-Sourcecode of this module]({{< meta repo-url >}})
+:link: [Quarto source code of this module]({{< meta repo-url >}})
 
 This module uses the [OER Template of NFDI4Objects](https://github.com/nfdi4objects/oer-template-skript)
 
-## Disclaimer: Einsatz von LLM {.appendix .unnumbered}
+## Disclaimer: Use of LLM {.appendix .unnumbered}
 
-<!-- Optionale Angaben zum Einsatz von LLM bei der Erstellung oder Überarbeitung des Skripts -->
+<!-- Optional information on the use of LLMs in the creation or revision of the module -->
 
-TODO, hier muss rein, dass der OER und die ganzen skripte mit Hilfe von AI (insb. Claude.ai) estellt wurden, aber validiert vom Autor. Wichtig hier ist skripte MIT lizenz, also ohne gewähr!
+This OER module and its accompanying notebooks were drafted with the assistance of **Claude** (Anthropic, <https://claude.ai/>). The AI was used in particular for drafting prose, converting Jupyter notebooks to browser-executable Quarto documents, porting the Academic Meta Tool to Python, and structuring the didactic material. All content, code, and SPARQL queries have been reviewed, executed end-to-end, and validated by the author before publication. Remaining errors are the author's sole responsibility.
 
-<!-- An dieser Stelle werden von Quarto automatisch generierte Abschnitte angehängt:
+The module is published **with a licence but without warranty**: it is provided "as is", without any express or implied guarantee of correctness, completeness, or fitness for a particular purpose. See the licence statement below for details.
 
-Bibliographie:
-Erstellt aus den in der qmd-Datei mit [@bibtex-Schlüssel] referenzierten Einträgen aus der Datei bibliographie.bib.
-Im Text nicht referenzierte Einträge aus der bibliographie.bib werden nicht zitiert.
-Der Zitierstil wird in der _oer_metadata.yml mit dem Schlüssel 'csl:' festgelegt. Im Verzeichnis /assets/csl/ sind gängige Zitierstile als csl-Datei vorhanden. Weitere sind hier zu finden: https://www.zotero.org/styles
+<!-- At this point, Quarto automatically appends the following sections:
 
-Lizenz:
-Angabe wird übernommen aus Schlüssel 'license:' in _oer_metadata.yml
+Bibliography:
+Generated from the entries referenced in the qmd file via [@bibtex-key] from the file bibliographie.bib.
+Entries from bibliographie.bib that are not referenced in the text will not be cited.
+The citation style is defined in _oer_metadata.yml via the key 'csl:'. Common citation styles are available as csl files in /assets/csl/. Further styles can be found at: https://www.zotero.org/styles
 
-Urheber:innen
-Angabe wird übernommen aus der _oer_metadata.yml Schlüssel 'copyright:'
+Licence:
+Taken from the key 'license:' in _oer_metadata.yml
 
-Zitiervorschläge
-Mit BibTeX zitieren:
-Automatisch von Quarto aus den Metadaten insb. aus dem Schlüssel 'citation:' in der _oer_metadata.yml generiertes bibtex-Zitat.
+Authors:
+Taken from _oer_metadata.yml key 'copyright:'
 
-Bitte zitieren Sie diesen OER-Baustein als:
-Angabe generiert aus:
+Citation suggestions:
+Cite with BibTeX:
+Automatically generated by Quarto from the metadata, in particular from the key 'citation:' in _oer_metadata.yml.
+
+Please cite this OER module as:
+Generated from:
   _autor_innen.yml
-  Schlüssel 'title:' in der qmd-Datei
-  Schlüssel 'issued' in der _oer_metadata.yml
-  Schlüssel 'doi:' in der _oer_metadata.yml / Wenn keine doi gesetzt wird der Titel mit dem Wert aus 'site-url:' in _oer_metadata.yml verlinkt.
+  key 'title:' in the qmd file
+  key 'issued' in _oer_metadata.yml
+  key 'doi:' in _oer_metadata.yml / If no doi is set, the title is linked to the value of 'site-url:' in _oer_metadata.yml.
 -->
