@@ -1,0 +1,731 @@
+---
+title: "Holy Wells in Ireland and the UK — dedications by gender"
+format: live-html
+engine: knitr
+pyodide:
+  packages:
+    - pandas
+    - matplotlib
+---
+
+{{< include ../_extensions/r-wasm/live/_knitr.qmd >}}
+
+This notebook queries [Wikidata](https://www.wikidata.org/) for holy
+wells in Ireland and the United Kingdom, joins each well to the
+saint it is dedicated to, and splits the result by the patron
+saint's gender. Two maps side by side make the geography visible;
+two bar charts show which individual saints dominate each group.
+
+It is a companion to the overview notebook
+`wikidata-holy-wells-map-live.qmd` (marker map + density grid), and
+takes one further step: instead of treating all wells as equivalent
+points, we ask *whom* each well commemorates and let that shape the
+picture.
+
+::: {.callout-note}
+On first load, your browser downloads the Python runtime (Pyodide,
+~10 MB). Please allow a moment for it to initialise.
+:::
+
+## About this notebook
+
+### Why this dataset?
+
+Dedications are the most information-dense single property of a
+holy well: a well is more than a point on a map, it is a point
+*named for* someone. Several features make this slice teachable:
+
+- **A second hop into Wikidata** — the query joins the well
+  (`Q1371047`) to the saint (`?namedAfter`) to the saint's gender
+  (`P21`). That second hop is where the knowledge graph earns its
+  keep; a flat list of wells would not tell you this, but Wikidata
+  already knows each saint's biographical data.
+- **Sharp, visible asymmetry** — the Irish sacred landscape is
+  heavily female-dedicated (Mary, Brigid, Íte), and the surprise of
+  *which* saints dominate on a map is a quick hook for discussing
+  sample bias, gendered historiography, and the limits of the
+  dataset.
+- **Two countries, very uneven coverage** — Ireland has hundreds of
+  modelled wells, the UK has a handful. This is itself a finding
+  about data completeness rather than about holy wells in the
+  world.
+
+### Data-context notes
+
+- The query returns **one row per well–patron pair**. Wells with
+  multiple patrons produce multiple rows. The grouping step below
+  keeps each well once, attaching the list of patrons.
+- `P21` (*sex or gender*) on a saint can be either `Q6581072`
+  (female) or `Q6581097` (male); these are the two values filtered
+  by the `VALUES ?gender { ... }` clause. Other values exist in
+  Wikidata for living people but are not relevant here.
+- A handful of wells have patrons of both genders (e.g. a joint
+  dedication). These appear on **both** maps.
+- The UK sample is small enough that a single well (St Winifred's
+  Well in Holywell, Wales) is a visible outlier on the female map.
+
+### Tooling notes
+
+Same stack as the overview notebook: `pyodide.http.pyfetch` for the
+SPARQL call, Leaflet via a single HTML output per map, and
+`matplotlib` for the bar charts. The side-by-side layout is a plain
+CSS `display:flex` wrapper around two independent map containers —
+no extra JavaScript for synchronisation, so each map can be
+zoomed and panned independently.
+
+## Step 1 — Define the SPARQL query
+
+The query walks two edges of the graph: `?item → ?namedAfter` via
+`P138` (*named after*), and `?namedAfter → ?gender` via `P21` (*sex
+or gender*). The two `VALUES` clauses filter countries (Ireland,
+UK) and genders (female, male) — both are whitelists rather than
+`FILTER` expressions, which Wikidata's query planner handles more
+efficiently.
+
+```{pyodide}
+#| label: query
+#| autorun: false
+from pyodide.http import pyfetch
+import urllib.parse
+
+SPARQL_ENDPOINT = "https://query.wikidata.org/sparql"
+
+SPARQL_QUERY = """
+SELECT DISTINCT ?item ?itemLabel ?namedAfter ?namedAfterLabel
+                ?gender ?country ?countryLabel ?geo WHERE {
+  ?item wdt:P31 wd:Q1371047;
+        wdt:P625 ?geo;
+        wdt:P138 ?namedAfter;
+        wdt:P17 ?country.
+  VALUES ?country { wd:Q27 wd:Q145 }
+  ?namedAfter wdt:P21 ?gender.
+  VALUES ?gender { wd:Q6581072 wd:Q6581097 }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+}
+"""
+
+async def fetch_sparql(endpoint, query):
+    url = endpoint + "?" + urllib.parse.urlencode(
+        {"query": query, "format": "json"}
+    )
+    response = await pyfetch(url, headers={
+        "Accept": "application/sparql-results+json",
+        "User-Agent": "OER-HolyWells-Dedications-Notebook/1.0"
+    })
+    data = await response.json()
+    return data["results"]["bindings"]
+
+bindings = await fetch_sparql(SPARQL_ENDPOINT, SPARQL_QUERY)
+print(f"✓ Retrieved {len(bindings)} rows from Wikidata")
+```
+
+## Step 2 — Load the data
+
+Each row is a (well, patron, gender) triple — so wells with multiple
+patrons appear multiple times. We build a long DataFrame first
+(one row per pair, which is what the bar charts want), then derive a
+wide per-well view (one row per well, patrons and genders as lists)
+which is what the maps want.
+
+```{pyodide}
+#| label: load
+#| autorun: false
+import re
+import pandas as pd
+
+assert bindings, "⚠ Please run the query cell first."
+
+_WKT_POINT_RE = re.compile(
+    r"point\s*\(\s*([-+\d.eE]+)\s+([-+\d.eE]+)\s*\)", re.IGNORECASE
+)
+_GENDER_LABEL = {
+    "http://www.wikidata.org/entity/Q6581072": "female",
+    "http://www.wikidata.org/entity/Q6581097": "male",
+}
+
+def parse_wkt_point(wkt):
+    if not wkt:
+        return (None, None)
+    m = _WKT_POINT_RE.search(wkt)
+    if not m:
+        return (None, None)
+    try:
+        lon, lat = float(m.group(1)), float(m.group(2))
+        return (lat, lon)
+    except ValueError:
+        return (None, None)
+
+# --- Long format: one row per well-patron pair ---
+long_rows = []
+for b in bindings:
+    lat, lon = parse_wkt_point(b.get("geo", {}).get("value"))
+    long_rows.append({
+        "item": b["item"]["value"],
+        "qid": b["item"]["value"].rsplit("/", 1)[-1],
+        "itemLabel": b.get("itemLabel", {}).get("value", ""),
+        "namedAfter": b["namedAfter"]["value"],
+        "namedAfterLabel": b.get("namedAfterLabel", {}).get("value", ""),
+        "gender": _GENDER_LABEL.get(b["gender"]["value"], "other"),
+        "country": b.get("countryLabel", {}).get("value", ""),
+        "latitude": lat,
+        "longitude": lon,
+    })
+long_df = pd.DataFrame(long_rows)
+
+# --- Wide format: one row per well, patrons/genders as lists ---
+wide_df = (long_df.groupby("item")
+                  .agg(itemLabel=("itemLabel", "first"),
+                       qid=("qid", "first"),
+                       latitude=("latitude", "first"),
+                       longitude=("longitude", "first"),
+                       country=("country", "first"),
+                       patrons=("namedAfterLabel", lambda s: sorted(set(s))),
+                       genders=("gender", lambda s: sorted(set(s))))
+                  .reset_index())
+
+print(f"✓ {len(long_df)} well–patron pairs")
+print(f"  {len(wide_df)} unique wells")
+print(f"  country breakdown: {wide_df['country'].value_counts().to_dict()}")
+print(f"  wells with patrons of both genders: "
+      f"{(wide_df['genders'].apply(len) > 1).sum()}")
+
+wide_df.head()
+```
+
+## Step 3 — Visualise
+
+### Step 3a — Two maps side by side: female and male patrons
+
+Two Leaflet maps sharing the same viewport, each fed a filtered
+subset of the wells. A well with patrons of both genders appears
+on both maps (once per gender). Click any marker for the well's
+name, its patrons, and a link to its Wikidata item.
+
+The maps are rendered in a CSS flex container — on a wide screen
+they sit next to each other, on a narrow one (phone) they stack.
+
+```{pyodide}
+#| label: map-gender
+#| autorun: false
+import json
+import uuid
+
+assert 'long_df' in dir() and not long_df.empty, "⚠ Please run the data-loading cell first."
+
+geo_long = long_df[long_df["latitude"].notna()].copy()
+
+# Build one marker record per (well, gender) — a well with patrons
+# of both genders produces two records, one per map.
+def build_markers(gender):
+    subset = geo_long[geo_long["gender"] == gender]
+    # Aggregate patrons per well *within this gender*
+    records = {}
+    for _, row in subset.iterrows():
+        uri = row["item"]
+        if uri not in records:
+            records[uri] = {
+                "lat": float(row["latitude"]),
+                "lon": float(row["longitude"]),
+                "name": row["itemLabel"],
+                "qid": row["qid"],
+                "country": row["country"],
+                "patrons": [],
+            }
+        records[uri]["patrons"].append(row["namedAfterLabel"])
+    for r in records.values():
+        r["patrons"] = sorted(set(r["patrons"]))
+    return list(records.values())
+
+female_markers = build_markers("female")
+male_markers   = build_markers("male")
+
+print(f"  {len(female_markers)} wells with female patrons")
+print(f"  {len(male_markers)} wells with male patrons")
+
+# Shared viewport centred on the combined bounding box
+all_lats = geo_long["latitude"].tolist()
+all_lons = geo_long["longitude"].tolist()
+centre = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)]
+
+payload = json.dumps({
+    "female": female_markers,
+    "male":   male_markers,
+    "centre": [float(centre[0]), float(centre[1])],
+})
+
+container_id = f"wells-pair-{uuid.uuid4().hex[:8]}"
+data_var     = f"__wellsPair_{container_id.replace('-', '_')}"
+female_id    = f"{container_id}-female"
+male_id      = f"{container_id}-male"
+
+html = f"""
+<style>
+  .wells-pair-wrap {{
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }}
+  .wells-pair-col {{
+    flex: 1 1 320px; min-width: 280px;
+  }}
+  .wells-pair-col h4 {{
+    margin: 0 0 4px 0; font: 600 14px/1.3 sans-serif;
+  }}
+  .wells-pair-col .wells-pair-map {{
+    height: 480px; width: 100%;
+    border: 1px solid #ddd; border-radius: 4px;
+  }}
+  .wells-pair-col .pink  {{ color: #c2185b; }}
+  .wells-pair-col .blue  {{ color: #1565c0; }}
+</style>
+<div class="wells-pair-wrap">
+  <div class="wells-pair-col">
+    <h4><span class="pink">●</span> female patrons <small>({len(female_markers)} wells)</small></h4>
+    <div id="{female_id}" class="wells-pair-map"></div>
+  </div>
+  <div class="wells-pair-col">
+    <h4><span class="blue">●</span> male patrons <small>({len(male_markers)} wells)</small></h4>
+    <div id="{male_id}" class="wells-pair-map"></div>
+  </div>
+</div>
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
+<script>window["{data_var}"] = {payload};</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {{
+    const data = window["{data_var}"];
+    const femaleId = "{female_id}";
+    const maleId   = "{male_id}";
+
+    function loadFullscreen(cb) {{
+        if (typeof L !== 'undefined' && L.control && L.control.fullscreen) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadFullscreen(cb), 50);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js';
+        s.onload = cb;
+        s.onerror = cb;
+        document.head.appendChild(s);
+    }}
+
+    let attempts = 0;
+    function init() {{
+        const elF = document.getElementById(femaleId);
+        const elM = document.getElementById(maleId);
+        if (!elF || !elM || typeof L === 'undefined') return setTimeout(init, 50);
+        if (elF._leaflet_id || elM._leaflet_id) return;
+        const hasFullscreen = !!(L.control && L.control.fullscreen);
+        if (!hasFullscreen && attempts < 40) {{ attempts++; return setTimeout(init, 50); }}
+
+        function makeMap(elId, markers, colour) {{
+            const osm = L.tileLayer(
+                'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
+                {{ maxZoom: 19,
+                   attribution: '&copy; OpenStreetMap contributors' }}
+            );
+            const opts = {{ center: data.centre, zoom: 6, layers: [osm] }};
+            if (hasFullscreen) {{
+                opts.fullscreenControl = true;
+                opts.fullscreenControlOptions = {{ position: 'topleft' }};
+            }}
+            const map = L.map(elId, opts);
+            for (const m of markers) {{
+                const patrons = m.patrons.join(', ');
+                const popup =
+                    '<b>' + m.name + '</b><br>' +
+                    '<small>' + m.country + '</small><br>' +
+                    '<i>named after</i>: ' + patrons + '<br>' +
+                    '<small><a href="https://www.wikidata.org/wiki/' +
+                    m.qid + '" target="_blank">Wikidata (' + m.qid + ')</a></small>';
+                L.circleMarker([m.lat, m.lon], {{
+                    radius: 5, color: colour, weight: 1,
+                    fillColor: colour, fillOpacity: 0.75
+                }}).bindPopup(popup, {{ maxWidth: 260 }}).addTo(map);
+            }}
+            setTimeout(() => map.invalidateSize(), 200);
+            return map;
+        }}
+
+        makeMap(femaleId, data.female, '#c2185b');
+        makeMap(maleId,   data.male,   '#1565c0');
+    }}
+    loadFullscreen(init);
+}})();
+</script>
+"""
+
+class _Html:
+    def __init__(self, s): self._s = s
+    def _repr_html_(self): return self._s
+_Html(html)
+```
+
+### Step 3b — Female patrons, one layer per saint
+
+Same data as the left map above, but now each saint gets her own
+toggleable layer with a distinct colour — the colour swatch sits
+directly in the layer-control label, so the panel itself acts as
+the legend. This mirrors the
+[Wikidata Query Service map view](https://w.wiki/AQ2F), which uses
+the `?layer` variable to drive categorical colouring, and lets you
+isolate individual dedications to see their geography on their own.
+
+```{pyodide}
+#| label: map-female-by-saint
+#| autorun: false
+import json
+import uuid
+
+assert 'long_df' in dir() and not long_df.empty, "⚠ Please run the data-loading cell first."
+
+# A 24-colour categorical palette — D3's category20 extended. More
+# saints than colours is handled by cycling, which is fine because
+# the toggle makes adjacent colour collisions unimportant.
+PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
+    "#e377c2", "#17becf", "#bcbd22", "#7f7f7f", "#aec7e8", "#ffbb78",
+    "#98df8a", "#ff9896", "#c5b0d5", "#c49c94", "#f7b6d2", "#9edae5",
+    "#dbdb8d", "#c7c7c7", "#393b79", "#637939", "#8c6d31", "#843c39",
+]
+
+def build_per_saint_map(gender, container_id):
+    """Prepare payload + HTML for one gendered per-saint map."""
+    sub = long_df[(long_df["gender"] == gender) & long_df["latitude"].notna()].copy()
+
+    # Order saints by descending well count so frequent saints get
+    # stable, distinguishable palette slots.
+    order = (sub.drop_duplicates(subset=["item", "namedAfterLabel"])
+                .groupby("namedAfterLabel").size()
+                .sort_values(ascending=False).index.tolist())
+    saint_colour = {name: PALETTE[i % len(PALETTE)] for i, name in enumerate(order)}
+
+    markers = [{
+        "lat":    float(row["latitude"]),
+        "lon":    float(row["longitude"]),
+        "name":   row["itemLabel"],
+        "qid":    row["qid"],
+        "country": row["country"],
+        "saint":  row["namedAfterLabel"],
+        "colour": saint_colour[row["namedAfterLabel"]],
+    } for _, row in sub.iterrows()]
+
+    saints = [{"saint": s, "colour": saint_colour[s]} for s in order]
+
+    if not markers:
+        return None, None, 0
+    all_lats = [m["lat"] for m in markers]
+    all_lons = [m["lon"] for m in markers]
+    centre = [sum(all_lats)/len(all_lats), sum(all_lons)/len(all_lons)]
+
+    payload = json.dumps({"markers": markers, "saints": saints,
+                          "centre": [float(centre[0]), float(centre[1])]})
+    return payload, saints, len(markers)
+
+female_payload, female_saints, female_n = build_per_saint_map("female", "")
+print(f"  female: {female_n} markers across {len(female_saints)} saints")
+
+map_id   = f"wells-female-saints-{uuid.uuid4().hex[:8]}"
+data_var = f"__wellsFemaleSaints_{map_id.replace('-', '_')}"
+
+html = f"""
+<div id="{map_id}" style="height:620px;width:100%;border:1px solid #ddd;
+     border-radius:4px"></div>
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
+<script>window["{data_var}"] = {female_payload};</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {{
+    const mapId = "{map_id}";
+    const data  = window["{data_var}"];
+
+    function loadFullscreen(cb) {{
+        if (typeof L !== 'undefined' && L.control && L.control.fullscreen) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadFullscreen(cb), 50);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js';
+        s.onload = cb;
+        s.onerror = cb;
+        document.head.appendChild(s);
+    }}
+
+    let attempts = 0;
+    function init() {{
+        const el = document.getElementById(mapId);
+        if (!el || typeof L === 'undefined') return setTimeout(init, 50);
+        if (el._leaflet_id) return;
+        const hasFullscreen = !!(L.control && L.control.fullscreen);
+        if (!hasFullscreen && attempts < 40) {{ attempts++; return setTimeout(init, 50); }}
+
+        const osm = L.tileLayer(
+            'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
+            {{ maxZoom: 19,
+               attribution: '&copy; OpenStreetMap contributors' }}
+        );
+
+        const saintLayers = {{}};
+        for (const s of data.saints) saintLayers[s.saint] = L.layerGroup();
+        for (const m of data.markers) {{
+            const popup =
+                '<b>' + m.name + '</b><br>' +
+                '<small>' + m.country + '</small><br>' +
+                '<i>named after</i>: ' + m.saint + '<br>' +
+                '<small><a href="https://www.wikidata.org/wiki/' +
+                m.qid + '" target="_blank">Wikidata (' + m.qid + ')</a></small>';
+            L.circleMarker([m.lat, m.lon], {{
+                radius: 5, color: m.colour, weight: 1,
+                fillColor: m.colour, fillOpacity: 0.8
+            }}).bindPopup(popup, {{ maxWidth: 260 }})
+              .addTo(saintLayers[m.saint]);
+        }}
+
+        const initial = [osm].concat(Object.values(saintLayers));
+        const mapOpts = {{ center: data.centre, zoom: 6, layers: initial }};
+        if (hasFullscreen) {{
+            mapOpts.fullscreenControl = true;
+            mapOpts.fullscreenControlOptions = {{ position: 'topleft' }};
+        }}
+        const map = L.map(mapId, mapOpts);
+
+        const overlays = {{}};
+        for (const s of data.saints) {{
+            const sw = '<span style="display:inline-block;width:10px;height:10px;'
+                + 'background:' + s.colour + ';border-radius:50%;'
+                + 'margin-right:6px;vertical-align:middle"></span>';
+            overlays[sw + s.saint] = saintLayers[s.saint];
+        }}
+
+        L.control.layers({{ 'OpenStreetMap': osm }}, overlays,
+                         {{ collapsed: true }}).addTo(map);
+
+        setTimeout(() => map.invalidateSize(), 200);
+    }}
+    loadFullscreen(init);
+}})();
+</script>
+"""
+
+class _Html:
+    def __init__(self, s): self._s = s
+    def _repr_html_(self): return self._s
+_Html(html)
+```
+
+### Step 3c — Male patrons, one layer per saint
+
+Same construction as 3b, on the male subset. Patrick is typically
+the most common, but the long tail of locally venerated saints
+(Lachtain, Kieran, Declan, …) shows the finer-grained character of
+a sacred landscape that blends national and very local figures.
+
+```{pyodide}
+#| label: map-male-by-saint
+#| autorun: false
+import json
+import uuid
+
+assert 'long_df' in dir() and not long_df.empty, "⚠ Please run the data-loading cell first."
+assert 'PALETTE' in dir() and 'build_per_saint_map' in dir(), \
+    "⚠ Please run the female per-saint map cell first (it defines PALETTE and the helper)."
+
+male_payload, male_saints, male_n = build_per_saint_map("male", "")
+print(f"  male: {male_n} markers across {len(male_saints)} saints")
+
+map_id   = f"wells-male-saints-{uuid.uuid4().hex[:8]}"
+data_var = f"__wellsMaleSaints_{map_id.replace('-', '_')}"
+
+html = f"""
+<div id="{map_id}" style="height:620px;width:100%;border:1px solid #ddd;
+     border-radius:4px"></div>
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet"
+      href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
+<script>window["{data_var}"] = {male_payload};</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {{
+    const mapId = "{map_id}";
+    const data  = window["{data_var}"];
+
+    function loadFullscreen(cb) {{
+        if (typeof L !== 'undefined' && L.control && L.control.fullscreen) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadFullscreen(cb), 50);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js';
+        s.onload = cb;
+        s.onerror = cb;
+        document.head.appendChild(s);
+    }}
+
+    let attempts = 0;
+    function init() {{
+        const el = document.getElementById(mapId);
+        if (!el || typeof L === 'undefined') return setTimeout(init, 50);
+        if (el._leaflet_id) return;
+        const hasFullscreen = !!(L.control && L.control.fullscreen);
+        if (!hasFullscreen && attempts < 40) {{ attempts++; return setTimeout(init, 50); }}
+
+        const osm = L.tileLayer(
+            'https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',
+            {{ maxZoom: 19,
+               attribution: '&copy; OpenStreetMap contributors' }}
+        );
+
+        const saintLayers = {{}};
+        for (const s of data.saints) saintLayers[s.saint] = L.layerGroup();
+        for (const m of data.markers) {{
+            const popup =
+                '<b>' + m.name + '</b><br>' +
+                '<small>' + m.country + '</small><br>' +
+                '<i>named after</i>: ' + m.saint + '<br>' +
+                '<small><a href="https://www.wikidata.org/wiki/' +
+                m.qid + '" target="_blank">Wikidata (' + m.qid + ')</a></small>';
+            L.circleMarker([m.lat, m.lon], {{
+                radius: 5, color: m.colour, weight: 1,
+                fillColor: m.colour, fillOpacity: 0.8
+            }}).bindPopup(popup, {{ maxWidth: 260 }})
+              .addTo(saintLayers[m.saint]);
+        }}
+
+        const initial = [osm].concat(Object.values(saintLayers));
+        const mapOpts = {{ center: data.centre, zoom: 6, layers: initial }};
+        if (hasFullscreen) {{
+            mapOpts.fullscreenControl = true;
+            mapOpts.fullscreenControlOptions = {{ position: 'topleft' }};
+        }}
+        const map = L.map(mapId, mapOpts);
+
+        const overlays = {{}};
+        for (const s of data.saints) {{
+            const sw = '<span style="display:inline-block;width:10px;height:10px;'
+                + 'background:' + s.colour + ';border-radius:50%;'
+                + 'margin-right:6px;vertical-align:middle"></span>';
+            overlays[sw + s.saint] = saintLayers[s.saint];
+        }}
+
+        L.control.layers({{ 'OpenStreetMap': osm }}, overlays,
+                         {{ collapsed: true }}).addTo(map);
+
+        setTimeout(() => map.invalidateSize(), 200);
+    }}
+    loadFullscreen(init);
+}})();
+</script>
+"""
+
+class _Html:
+    def __init__(self, s): self._s = s
+    def _repr_html_(self): return self._s
+_Html(html)
+```
+
+### Step 3d — Top patrons per gender
+
+The maps show *where*; the bar charts show *who*. One bar chart per
+gender, Top-15 patrons each, wells counted once per patron per
+well. Mary and Brigid dominate the female side by a wide margin —
+their visual weight on the map is not just about geography but
+about how often they are the *reason* a well exists at all.
+
+```{pyodide}
+#| label: bar-patrons
+#| autorun: false
+import matplotlib.pyplot as plt
+
+assert 'long_df' in dir() and not long_df.empty, "⚠ Please run the data-loading cell first."
+
+# Count wells per patron. Deduplicate on (item, namedAfter) so a well
+# doesn't double-count if it somehow appears twice in the binding set.
+dedup = long_df.drop_duplicates(subset=["item", "namedAfter"])
+
+def top_patrons(gender, n=15):
+    sub = dedup[dedup["gender"] == gender]
+    return (sub.groupby("namedAfterLabel")
+               .size()
+               .sort_values(ascending=False)
+               .head(n))
+
+female_top = top_patrons("female")
+male_top   = top_patrons("male")
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 5.5), sharex=False)
+
+for ax, data, title, colour in [
+    (axes[0], female_top, f"Top {len(female_top)} female patrons", "#c2185b"),
+    (axes[1], male_top,   f"Top {len(male_top)} male patrons",     "#1565c0"),
+]:
+    ax.barh(data.index, data.values, color=colour)
+    ax.set_xlabel("number of wells")
+    ax.set_title(title)
+    ax.invert_yaxis()
+    for i, v in enumerate(data.values):
+        ax.text(v + max(data.values) * 0.01, i, str(int(v)),
+                va="center", fontsize=9)
+
+plt.tight_layout()
+plt.show()
+```
+
+## Step 4 — Explore
+
+The two DataFrames — `long_df` (one row per well–patron pair) and
+`wide_df` (one row per well) — stay in scope. Two quick
+starting points:
+
+### Gender ratio overall
+
+```{pyodide}
+#| label: explore-ratio
+#| autorun: false
+assert 'long_df' in dir(), "⚠ Please run the data-loading cell first."
+
+dedup = long_df.drop_duplicates(subset=["item", "namedAfter"])
+ratio = dedup["gender"].value_counts()
+print("Well-patron pairs by gender:")
+for g, n in ratio.items():
+    pct = 100 * n / ratio.sum()
+    print(f"  {g:6s}  {n:4d}   ({pct:5.1f}%)")
+
+# How many *wells* are exclusively female-dedicated, male, or mixed?
+assert 'wide_df' in dir()
+def classify(genders):
+    s = set(genders)
+    if s == {"female"}: return "female only"
+    if s == {"male"}:   return "male only"
+    return "mixed"
+wide_df["gender_class"] = wide_df["genders"].apply(classify)
+print("\nWells by dedication class:")
+for cls, n in wide_df["gender_class"].value_counts().items():
+    print(f"  {cls:14s}  {n}")
+```
+
+### A specific saint on the map
+
+Change `SAINT` below to any patron name that appears in the bar
+chart (exact label, case-sensitive). The cell then prints all wells
+dedicated to that saint with their coordinates and country.
+
+```{pyodide}
+#| label: explore-saint
+#| autorun: false
+SAINT = "Brigid of Kildare"   # try: "Mary", "Winifred", "Patrick", "Íte of Killeedy"
+
+assert 'long_df' in dir(), "⚠ Please run the data-loading cell first."
+sub = long_df[long_df["namedAfterLabel"] == SAINT]
+print(f"{len(sub)} wells dedicated to {SAINT!r}:\n")
+for _, row in sub.iterrows():
+    print(f"  {row['itemLabel']:40s}  "
+          f"({row['latitude']:.3f}, {row['longitude']:.3f})  "
+          f"[{row['country']}]  {row['qid']}")
+```
+
+---
+
+*Part of an Open Educational Resource series on knowledge graphs
+and linked open data, produced in the context of
+[NFDI4Objects](https://www.nfdi4objects.net/). Data: Wikidata
+[WikiProject HolyWells](https://www.wikidata.org/wiki/Wikidata:WikiProject_HolyWells),
+CC0. Tiles: OpenStreetMap contributors.*

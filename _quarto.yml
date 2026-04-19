@@ -21,6 +21,8 @@ website:
             href: notebooks_lod/wikidata-ogham-sites-map-live.qmd
           - text: "Wikidata Holy Wells Leaflet Map"
             href: notebooks_lod/wikidata-holy-wells-map-live.qmd
+          - text: "Wikidata Holy Wells Dedications Leaflet Map"
+            href: notebooks_lod/wikidata-holy-wells-dedications-live.qmd
           - text: "NFDI4Objects KG Ogham Sites Diagrams"
             href: notebooks_lod/n4okg-ogham-sites-county-live.qmd
           - text: "NFDI4Objects KG Ogham Sites Leaflet Map"
