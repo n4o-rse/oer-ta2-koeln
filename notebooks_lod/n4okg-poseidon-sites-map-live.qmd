@@ -1,0 +1,677 @@
+---
+title: "NFDI4Objects KG — Poseidon aDNA sites on a map"
+format: live-html
+engine: knitr
+pyodide:
+  packages:
+    - pandas
+---
+
+{{< include ../_extensions/r-wasm/live/_knitr.qmd >}}
+
+This browser-executable notebook queries the NFDI4Objects Knowledge
+Graph for archaeogenetic **aDNA samples** from the
+[Poseidon Community Archive](https://www.poseidon-adna.org/) — loaded
+into the N4O KG as `collection/17` under the
+[ArNO ontology](https://github.com/archaeonatural-cloud/archaeonatural-ontology)
+(Straten, Strohm, Thiery & Renz 2025) — aggregates them by discovery
+site, and plots the result on two interactive
+[Leaflet](https://leafletjs.com/) maps. The first map shows
+individual sites as country-coloured markers; the second shows the
+same sites styled by sample count, so concentrations of heavily
+sampled locations are visible at a glance.
+
+It is part of an Open Educational Resource series on knowledge
+graphs and linked open data, and is designed to stand on its own. A
+local-Python variant of this notebook is available as
+`n4okg-poseidon-sites-map.ipynb`.
+
+::: {.callout-note}
+On first load, your browser downloads the Python runtime (Pyodide,
+~10 MB) and the Leaflet library (~150 KB). Please allow a moment for
+these to initialise.
+:::
+
+::: {.callout-warning}
+The NFDI4Objects Knowledge Graph is a research prototype. If this
+notebook fails to load data with a *network error*, the endpoint may
+be temporarily unreachable or may not allow cross-origin browser
+requests from this page's domain. The local `.ipynb` companion is
+not affected by this and is always a reliable fallback.
+:::
+
+## About this notebook
+
+### Why this dataset?
+
+`collection/17` holds the Poseidon Community Archive (PCA), a large
+open corpus of archaeogenetic genotype data with contextual and
+bibliographic metadata (Schmid et al. 2024). For teaching purposes
+it offers something most linked-data-for-archaeology examples do
+not: a **natural-science dataset** mapped into a cultural-heritage
+knowledge graph. Samples come with coordinates, countries, dating,
+capture types, and genetic measurements — enough structure to make
+meaningful aggregations visible without being overwhelming.
+
+### What you'll learn
+
+- how to traverse a multi-hop ArNO path
+  (`aDNASample → DiscoverySite → Site → Place → Country`) in a
+  single SPARQL query
+- how the `GeoSPARQL` two-step indirection works on this endpoint
+  (geometry is attached to the `DiscoverySite`, not to the `Sample`)
+- how to aggregate by a coordinate tuple so that one named site with
+  multiple samples collapses to a single visible marker
+
+### Data-context notes
+
+- **Coordinates live on the `DiscoverySite`, not on the `Sample`.**
+  The ArNO modelling keeps the sample focused on what *is the
+  sample* (tissue, genetics, dating) and delegates *where it was
+  found* to the discovery site. The query path reflects this:
+  `?sample arno:foundAtDiscoverySite ?ds . ?ds geo:hasGeometry/geo:asWKT ?wkt`.
+- **Aggregation is by `(site, country, wkt)`** rather than by site
+  name alone. A single named site may in principle be represented
+  by more than one coordinate in the underlying data, and grouping
+  by the geometry tuple avoids accidentally unifying them. The
+  poseidon2lod README also notes that site and location reference
+  coordinates are created by averaging associated discovery-site
+  coordinates when matching against GeoNames and Wikidata.
+- **WKT literals** on this endpoint use `POINT(lon lat)` (uppercase,
+  longitude first). The parser below handles both casings
+  defensively and swaps the order for Leaflet.
+
+### Tooling notes
+
+In the browser, SPARQL access goes through `pyodide.http.pyfetch` —
+`SPARQLWrapper` is not available in Pyodide (it depends on
+`requests`, which requires a system-level networking stack absent in
+WebAssembly). Mapping uses a hand-rolled Leaflet block returned via
+`_repr_html_` rather than `folium`, because `folium` writes its
+output to disk and relies on file-system paths that Pyodide cannot
+expose to the parent page.
+
+## Step 1 — Define the SPARQL query
+
+The query walks the ArNO path
+`aDNASample → foundAtDiscoverySite → atSite → atPlace → inCountry`
+to reach each sample's country, and in parallel pulls the WKT
+geometry from the discovery site via `geo:hasGeometry/geo:asWKT`.
+We then `GROUP BY` site label, country label, and WKT so that one
+row of the result is one *place on the map*, regardless of how many
+samples it represents.
+
+```{pyodide}
+#| label: setup
+#| autorun: false
+from pyodide.http import pyfetch
+import urllib.parse
+import re
+import json
+import pandas as pd
+
+SPARQL_ENDPOINT = "https://graph.nfdi4objects.net/api/sparql"
+
+SPARQL_QUERY = """
+PREFIX arno: <http://archaeonatural.cloud/ont/>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX geosparql: <http://www.opengis.net/ont/geosparql#>
+SELECT ?siteLabel ?countryLabel ?wkt (COUNT(DISTINCT ?sample) AS ?numSamples)
+WHERE {
+  GRAPH <https://graph.nfdi4objects.net/collection/17> {
+    ?sample rdf:type arno:aDNASample ;
+            arno:foundAtDiscoverySite ?discoverySite .
+    ?discoverySite geosparql:hasGeometry ?geom .
+    ?geom geosparql:asWKT ?wkt .
+    OPTIONAL {
+      ?discoverySite arno:atSite ?site .
+      ?site rdfs:label ?siteLabel .
+    }
+    OPTIONAL {
+      ?discoverySite arno:atSite ?site .
+      ?site arno:atPlace ?place .
+      ?place arno:inCountry ?country .
+      ?country rdfs:label ?countryLabel .
+    }
+  }
+}
+GROUP BY ?siteLabel ?countryLabel ?wkt
+ORDER BY DESC(?numSamples)
+"""
+
+async def fetch_sparql(endpoint, query):
+    # POST with form-encoded body is the SPARQL 1.1 standard transport
+    # for long queries and the most robust option across endpoints that
+    # use GRAPH clauses with long IRIs.
+    body = urllib.parse.urlencode({"query": query})
+    response = await pyfetch(
+        endpoint,
+        method="POST",
+        headers={
+            "Accept": "application/sparql-results+json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body=body,
+    )
+    data = await response.json()
+    return data["results"]["bindings"]
+
+# Case-insensitive WKT parser: handles both 'Point(...)' and 'POINT(...)'
+# and tolerates an optional SRID prefix like
+# '<http://www.opengis.net/def/crs/OGC/1.3/CRS84> POINT(...)'.
+_WKT_POINT_RE = re.compile(r"point\s*\(\s*([-+\d.eE]+)\s+([-+\d.eE]+)\s*\)",
+                           re.IGNORECASE)
+
+def parse_wkt_point(wkt):
+    """Parse a WKT Point literal 'POINT(lon lat)' (any case) into (lat, lon)."""
+    if not wkt:
+        return (None, None)
+    m = _WKT_POINT_RE.search(wkt)
+    if not m:
+        return (None, None)
+    try:
+        lon, lat = float(m.group(1)), float(m.group(2))
+        return (lat, lon)
+    except ValueError:
+        return (None, None)
+
+print("✓ Helpers defined. Run the next cell to load the data.")
+```
+
+## Step 2 — Load the data
+
+The bindings from a SPARQL JSON result are flattened into a
+DataFrame. The WKT literal is split into separate `latitude` and
+`longitude` columns, and we drop rows whose coordinates failed to
+parse — GeoSPARQL literals occasionally carry non-standard wrappings
+that the regex does not match, and it is better to surface that
+gracefully than to fail the whole notebook.
+
+```{pyodide}
+#| label: load-data
+#| autorun: false
+results = await fetch_sparql(SPARQL_ENDPOINT, SPARQL_QUERY)
+
+rows = []
+for r in results:
+    lat, lon = parse_wkt_point(r.get("wkt", {}).get("value"))
+    rows.append({
+        "site":       r.get("siteLabel", {}).get("value", "(unnamed site)"),
+        "country":    r.get("countryLabel", {}).get("value", "(unknown)"),
+        "wkt":        r.get("wkt", {}).get("value"),
+        "numSamples": int(r["numSamples"]["value"]),
+        "latitude":   lat,
+        "longitude":  lon,
+    })
+
+df = pd.DataFrame(rows).dropna(subset=["latitude", "longitude"])
+assert not df.empty, "⚠ No records with coordinates returned — check query."
+print(f"✓ {len(df)} discovery-site coordinates across "
+      f"{df['country'].nunique()} countries "
+      f"(total samples: {df['numSamples'].sum()}).")
+df.head(10)
+```
+
+## Step 3a — Map with country-coloured markers
+
+The first map is built as an HTML string in Python and returned as
+the cell's value via a `_repr_html_`-reprable object. `quarto-live`
+inserts the HTML on the main thread, where the browser happily runs
+the embedded `<script>` with full DOM access.
+
+A [layer control](https://leafletjs.com/examples/layers-control/) in
+the top-right corner (expand it by hovering or tapping) offers four
+base layers — OpenStreetMap as the default, the Humanitarian OSM
+style, Esri satellite imagery, and Esri's world terrain base — and
+one overlay *per country*, each with its colour swatch in the label.
+Unchecking a country hides just its markers, so you can isolate
+regions interactively.
+
+```{pyodide}
+#| label: render-markers-map
+#| autorun: false
+assert 'df' in dir() and not df.empty, "⚠ Please run the data-loading cell first."
+
+import uuid
+
+# --- 1. Assign a colour to each country (reused across both maps) -------
+palette = [
+    "#e6194B", "#3cb44b", "#4363d8", "#f58231", "#911eb4",
+    "#42d4f4", "#f032e6", "#469990", "#9A6324", "#800000",
+    "#808000", "#000075", "#e6beff", "#fabed4", "#aaffc3",
+    "#fffac8", "#dcbeff", "#ffd8b1", "#a9a9a9", "#ffe119",
+]
+countries = sorted(df["country"].unique())
+country_colors = {c: palette[i % len(palette)] for i, c in enumerate(countries)}
+
+# --- 2. Prepare records as plain JSON-serialisable dicts ----------------
+markers = [
+    {
+        "lat":     float(row["latitude"]),
+        "lon":     float(row["longitude"]),
+        "site":    row["site"],
+        "country": row["country"],
+        "count":   int(row["numSamples"]),
+        "color":   country_colors[row["country"]],
+    }
+    for _, row in df.iterrows()
+]
+country_list = [{"country": c, "color": country_colors[c]} for c in countries]
+markers_payload = json.dumps({"markers": markers, "countries": country_list})
+
+# --- 3. Unique id so re-runs don't collide with previous renders --------
+markers_map_id = f"poseidon-markers-{uuid.uuid4().hex[:8]}"
+markers_data_var = f"__poseidonMarkersData_{markers_map_id.replace('-', '_')}"
+
+markers_html = f"""
+<div id="{markers_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px"></div>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
+<script>window["{markers_data_var}"] = {markers_payload};</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {{
+    const mapId = "{markers_map_id}";
+    const data = window["{markers_data_var}"];
+
+    function loadFullscreenPlugin(cb) {{
+        if (typeof L !== 'undefined' && L.control && L.control.fullscreen) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadFullscreenPlugin(cb), 50);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js';
+        s.onload = cb;
+        s.onerror = cb;   // proceed without fullscreen if CDN blocked
+        document.head.appendChild(s);
+    }}
+
+    let initAttempts = 0;
+    const MAX_ATTEMPTS = 40;
+
+    function init() {{
+        const el = document.getElementById(mapId);
+        if (!el || typeof L === 'undefined') return setTimeout(init, 50);
+        if (el._leaflet_id) return;
+
+        const hasFullscreen = !!(L.control && L.control.fullscreen);
+        if (!hasFullscreen && initAttempts < MAX_ATTEMPTS) {{
+            initAttempts++;
+            return setTimeout(init, 50);
+        }}
+
+        // --- Base layers -----------------------------------------------
+        const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }});
+        const osmHOT = L.tileLayer('https://{{s}}.tile.openstreetmap.fr/hot/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors, Tiles style by <a href="https://www.hotosm.org/" target="_blank">HOT</a> '
+                + 'hosted by <a href="https://openstreetmap.fr/" target="_blank">OSM France</a>'
+        }});
+        const esriImagery = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            maxZoom: 18,
+            attribution: 'Tiles &copy; Esri &mdash; Sources: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+        }});
+        const esriTerrain = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            maxZoom: 13,
+            attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA, DeLorme, and NPS'
+        }});
+
+        // --- Overlays: one layer per country --------------------------
+        const countryLayers = {{}};
+        const allBounds = [];
+        for (const c of data.countries) {{
+            countryLayers[c.country] = L.layerGroup();
+        }}
+        for (const m of data.markers) {{
+            const marker = L.circleMarker([m.lat, m.lon], {{
+                radius: 6, color: m.color, weight: 1.2,
+                fillColor: m.color, fillOpacity: 0.8
+            }}).bindPopup(
+                '<b>' + m.site + '</b><br>' +
+                'Country: ' + m.country + '<br>' +
+                'aDNA samples: <b>' + m.count + '</b>'
+            );
+            marker.addTo(countryLayers[m.country]);
+            allBounds.push([m.lat, m.lon]);
+        }}
+
+        const initialLayers = [osm];
+        const overlays = {{}};
+        for (const c of data.countries) {{
+            initialLayers.push(countryLayers[c.country]);
+            const swatch = '<span style="display:inline-block;width:10px;height:10px;'
+                + 'background:' + c.color + ';border-radius:50%;'
+                + 'margin-right:6px;vertical-align:middle"></span>';
+            overlays[swatch + c.country] = countryLayers[c.country];
+        }}
+
+        const mapOptions = {{
+            center: [30.0, 10.0], zoom: 2,
+            layers: initialLayers
+        }};
+        if (hasFullscreen) {{
+            mapOptions.fullscreenControl = true;
+            mapOptions.fullscreenControlOptions = {{ position: 'topleft' }};
+        }}
+        const map = L.map(mapId, mapOptions);
+        if (allBounds.length) map.fitBounds(allBounds, {{ padding: [30, 30] }});
+
+        const baseLayers = {{
+            "OpenStreetMap": osm,
+            "OpenStreetMap.HOT": osmHOT,
+            "Esri.WorldImagery": esriImagery,
+            "Esri.WorldTerrain": esriTerrain
+        }};
+        L.control.layers(baseLayers, overlays, {{ collapsed: true }}).addTo(map);
+
+        setTimeout(() => map.invalidateSize(), 200);
+    }}
+
+    loadFullscreenPlugin(init);
+}})();
+</script>
+"""
+
+class _Html:
+    def __init__(self, s): self._s = s
+    def _repr_html_(self): return self._s
+
+_Html(markers_html)
+```
+
+## Step 3b — Hex-binned sample density
+
+The second map aggregates samples into a **hexagonal grid**, with
+each cell coloured by the number of aDNA samples falling inside
+it. A site with hundreds of samples contributes *hundreds* to its
+cell, not one — so the heatmap reflects **sampling intensity**,
+not just the presence of a dig. Overlapping sites in the same
+region compound, which makes heavily-studied clusters (Central
+Europe, the Eurasian steppe, Anatolia) jump out even at a world
+zoom level.
+
+We hand-roll the hex binning in Python and draw the polygons as
+Leaflet `L.polygon` — no extra plugin, no canvas resize quirks, and
+the colour legend aligns perfectly with the underlying buckets.
+The hex size is ~1.0° longitude (roughly 80 km at 45°N), large
+enough to aggregate multiple neighbouring sites into each cell, and
+small enough to keep regional structure visible.
+
+```{pyodide}
+#| label: render-hex-map
+#| autorun: false
+import math
+from collections import Counter
+
+assert 'df' in dir() and not df.empty, "⚠ Please run the data-loading cell first."
+
+# Weight each site by its sample count: one site with 341 samples
+# contributes 341 to its hex cell. This is what makes the density map
+# a *sampling-intensity* map rather than a site-count map.
+weighted_points = [
+    (float(row["longitude"]), float(row["latitude"]), int(row["numSamples"]))
+    for _, row in df.iterrows()
+]
+
+# ~1.0° ≈ 80 km at 45°N. With a world-spanning dataset this gives
+# roughly 100–200 non-empty cells, which is enough regional detail
+# without cluttering the map.
+HEX_SIZE_DEG = 1.0
+phi0 = math.radians(df["latitude"].mean())
+ky   = 1.0 / math.cos(phi0)
+
+def point_to_hex(lon, lat, size):
+    x, y = lon, lat * ky
+    q = (2/3) * x / size
+    r = (-1/3) * x / size + (math.sqrt(3)/3) * y / size
+    cx, cz = q, r; cy = -cx - cz
+    rx, ry, rz = round(cx), round(cy), round(cz)
+    dx, dy, dz = abs(rx - cx), abs(ry - cy), abs(rz - cz)
+    if dx > dy and dx > dz:   rx = -ry - rz
+    elif dy > dz:             ry = -rx - rz
+    else:                     rz = -rx - ry
+    return int(rx), int(rz)
+
+def hex_polygon(q, r, size):
+    cx = size * 1.5 * q
+    cy = size * math.sqrt(3) * (r + q/2)
+    return [((cy + size * math.sin(math.radians(60*i))) / ky,
+              cx + size * math.cos(math.radians(60*i))) for i in range(6)]
+
+# Accumulate sample counts per hex cell (not site counts).
+counts = Counter()
+for lon, lat, n in weighted_points:
+    counts[point_to_hex(lon, lat, HEX_SIZE_DEG)] += n
+
+if not counts:
+    raise RuntimeError("No hex cells produced — did the query return coordinates?")
+
+max_n = max(counts.values())
+# Five-step viridis ramp, dark purple (low) → yellow (high), consistent
+# with the proportional-symbol conventions of other notebooks in this OER.
+VIRIDIS = ["#440154", "#3b528b", "#21908d", "#5dc863", "#fde725"]
+N_BINS  = len(VIRIDIS)
+
+def bucket_colour(n):
+    # Log-scaled bucketing — aDNA sample counts per cell are heavily
+    # right-skewed (a few cells in the hundreds, many in the single
+    # digits). Linear bins would collapse most of the map into one
+    # colour; log bins keep small clusters visible.
+    t = math.log(n) / math.log(max_n) if max_n > 1 else 1.0
+    idx = min(N_BINS - 1, int(t * N_BINS))
+    return VIRIDIS[idx]
+
+# Bin edges for the legend — back out from the log bucketing.
+legend_items = []
+if max_n > 1:
+    for i in range(N_BINS):
+        lo_t = i       / N_BINS
+        hi_t = (i + 1) / N_BINS
+        lo = max(1, int(math.ceil(math.exp(lo_t * math.log(max_n)))))
+        hi = max(lo, int(math.floor(math.exp(hi_t * math.log(max_n)))))
+        legend_items.append({
+            "colour": VIRIDIS[i],
+            "label":  f"{lo}" if lo == hi else f"{lo}–{hi}",
+        })
+else:
+    legend_items.append({"colour": VIRIDIS[-1], "label": "1"})
+
+features = [{
+    "polygon": hex_polygon(q, r, HEX_SIZE_DEG),
+    "count":   int(n),
+    "color":   bucket_colour(n),
+} for (q, r), n in counts.items()]
+
+print(f"✓ {len(features)} non-empty hex cells "
+      f"(max samples per cell: {max_n:,}; total: {sum(counts.values()):,})")
+
+count_payload = json.dumps({
+    "features":   features,
+    "legend":     legend_items,
+    "centre":     [float(df["latitude"].mean()), float(df["longitude"].mean())],
+    "max_count":  max_n,
+})
+
+count_map_id = f"poseidon-hex-{uuid.uuid4().hex[:8]}"
+count_data_var = f"__poseidonHexData_{count_map_id.replace('-', '_')}"
+
+count_html = f"""
+<div id="{count_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px;position:relative"></div>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
+<script>window["{count_data_var}"] = {count_payload};</script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {{
+    const mapId = "{count_map_id}";
+    const data = window["{count_data_var}"];
+
+    function loadFullscreen(cb) {{
+        if (typeof L !== 'undefined' && L.control && L.control.fullscreen) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadFullscreen(cb), 50);
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js';
+        s.onload = cb;
+        s.onerror = cb;
+        document.head.appendChild(s);
+    }}
+
+    let attempts = 0;
+    const MAX_ATTEMPTS = 40;
+
+    function init() {{
+        const el = document.getElementById(mapId);
+        if (!el || typeof L === 'undefined') return setTimeout(init, 50);
+        if (el._leaflet_id) return;
+
+        const hasFullscreen = !!(L.control && L.control.fullscreen);
+        if (!hasFullscreen && attempts < MAX_ATTEMPTS) {{
+            attempts++;
+            return setTimeout(init, 50);
+        }}
+
+        // --- Base layers -----------------------------------------------
+        const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors'
+        }});
+        const osmHOT = L.tileLayer('https://{{s}}.tile.openstreetmap.fr/hot/{{z}}/{{x}}/{{y}}.png', {{
+            maxZoom: 19,
+            attribution: '&copy; OpenStreetMap contributors, Tiles style by HOT'
+        }});
+        const esriTerrain = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
+            maxZoom: 13,
+            attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA'
+        }});
+
+        // --- Overlay: one polygon per hex cell --------------------------
+        const hexLayer = L.layerGroup();
+        const allBounds = [];
+        for (const f of data.features) {{
+            const poly = L.polygon(f.polygon, {{
+                color: '#333', weight: 0.6,
+                fillColor: f.color, fillOpacity: 0.78
+            }}).bindTooltip(
+                '<b>' + f.count.toLocaleString() + '</b> aDNA sample'
+                    + (f.count !== 1 ? 's' : '') + ' in this cell',
+                {{ sticky: true }}
+            );
+            poly.addTo(hexLayer);
+            for (const latlon of f.polygon) allBounds.push(latlon);
+        }}
+
+        const mapOptions = {{
+            center: data.centre, zoom: 3,
+            layers: [osm, hexLayer]
+        }};
+        if (hasFullscreen) {{
+            mapOptions.fullscreenControl = true;
+            mapOptions.fullscreenControlOptions = {{ position: 'topleft' }};
+        }}
+        const map = L.map(mapId, mapOptions);
+        if (allBounds.length) map.fitBounds(allBounds, {{ padding: [20, 20] }});
+
+        const baseLayers = {{
+            "OpenStreetMap": osm,
+            "OpenStreetMap.HOT": osmHOT,
+            "Esri.WorldTerrain": esriTerrain
+        }};
+        const overlays = {{
+            "Hex density (samples per cell)": hexLayer
+        }};
+        L.control.layers(baseLayers, overlays, {{ collapsed: true }}).addTo(map);
+
+        // --- Legend — one swatch per bin in the bottom-right -----------
+        const legend = L.control({{ position: 'bottomright' }});
+        legend.onAdd = function() {{
+            const div = L.DomUtil.create('div');
+            div.style.cssText = 'background:rgba(255,255,255,0.92);'
+                + 'padding:8px 12px;border-radius:4px;'
+                + 'font:12px/1.5 system-ui,sans-serif;'
+                + 'box-shadow:0 1px 4px rgba(0,0,0,0.2)';
+            let html = '<b>Samples per hex</b> <small>(log)</small><br>';
+            // High bin on top
+            for (let i = data.legend.length - 1; i >= 0; i--) {{
+                const b = data.legend[i];
+                html += '<span style="display:inline-block;width:14px;height:14px;'
+                    + 'background:' + b.colour + ';'
+                    + 'border:1px solid #333;'
+                    + 'margin-right:6px;vertical-align:middle"></span>'
+                    + b.label + '<br>';
+            }}
+            div.innerHTML = html;
+            return div;
+        }};
+        legend.addTo(map);
+
+        setTimeout(() => map.invalidateSize(), 200);
+    }}
+
+    loadFullscreen(init);
+}})();
+</script>
+"""
+
+_Html(count_html)
+```
+
+## Step 4 — Exploring the data
+
+The cells below are a free playground — filter the DataFrame by
+country, rank sites by sample count, or compute per-country
+aggregates. Remember: one row of `df` is one *(site, country,
+coordinate)* tuple, with a `numSamples` column holding the number
+of aDNA samples aggregated there.
+
+```{pyodide}
+#| label: explore-top
+#| autorun: false
+assert 'df' in dir(), "⚠ Please run the data-loading cell first."
+
+# Top 15 sites by sample count — the "heavily-sampled-sites" list.
+top = (df.sort_values("numSamples", ascending=False)
+         .head(15)
+         [["site", "country", "numSamples"]]
+         .reset_index(drop=True))
+print(f"Top {len(top)} sites by aDNA sample count:")
+top
+```
+
+```{pyodide}
+#| label: explore-country
+#| autorun: false
+assert 'df' in dir(), "⚠ Please run the data-loading cell first."
+
+# Per-country summary: site count and total sample count.
+summary = (
+    df.groupby("country")
+      .agg(
+          n_sites=("site", "nunique"),
+          n_samples=("numSamples", "sum"),
+      )
+      .sort_values("n_samples", ascending=False)
+)
+summary
+```
+
+---
+
+## References
+
+- **Straten, M. thor, Strohm, S., Thiery, F. & Renz, M.** (2025). Data-Driven
+  Community Standards for Interdisciplinary Heterogeneous Information
+  Networks. *E-Science-Tage 2025.* Heidelberg: heiBOOKS.
+  doi: [10.11588/heibooks.1652.c23914](https://doi.org/10.11588/heibooks.1652.c23914)
+- **Schmid, C. et al.** (2024). Poseidon — A framework for archaeogenetic
+  human genotype data management. *eLife* 13.
+  doi: [10.7554/eLife.98317.1](https://doi.org/10.7554/eLife.98317.1)
+- **archaeonatural-cloud/poseidon2lod** — RDF generation scripts.
+  [github.com/archaeonatural-cloud/poseidon2lod](https://github.com/archaeonatural-cloud/poseidon2lod)
+
+*This notebook is part of the Open Educational Resources of
+[NFDI4Objects](https://www.nfdi4objects.net/).*

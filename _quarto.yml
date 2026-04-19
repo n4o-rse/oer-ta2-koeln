@@ -35,6 +35,10 @@ website:
             href: notebooks_lod/n4okg-samian-discovery-sites-live.qmd
           - text: "NFDI4Objects KG Samian Potter activity"
             href: notebooks_lod/n4okg-samian-potter-activity-live.qmd
+          - text: "NFDI4Objects KG Poseidon Sites Map"
+            href: notebooks_lod/n4okg-poseidon-sites-map-live.qmd
+          - text: "NFDI4Objects KG Poseidon Country Capture"
+            href: notebooks_lod/n4okg-poseidon-country-capture-live.qmd
           - text: "Local TTL-File Campanian Ignimbrite Sites"
             href: notebooks_lod/local_ttl-campanian-ignimbrite-sites-live.qmd
       - text: "Jupyter Notebooks: AMT"

@@ -1,0 +1,418 @@
+---
+title: "NFDI4Objects KG — Poseidon aDNA samples: country × capture type"
+format: live-html
+engine: knitr
+pyodide:
+  packages:
+    - pandas
+    - matplotlib
+---
+
+{{< include ../_extensions/r-wasm/live/_knitr.qmd >}}
+
+This browser-executable notebook queries the NFDI4Objects Knowledge
+Graph for archaeogenetic **aDNA samples** from the
+[Poseidon Community Archive](https://www.poseidon-adna.org/) — loaded
+into the N4O KG as `collection/17` under the
+[ArNO ontology](https://github.com/archaeonatural-cloud/archaeonatural-ontology)
+(Straten, Strohm, Thiery & Renz 2025) — and cross-tabulates them by
+**country** and **capture type**. Two complementary views render the
+result: a stacked bar chart showing both the overall sample volume
+per country and the methodological mix within each, and a heatmap
+that makes every country × method combination individually
+inspectable.
+
+Unlike the companion notebook `n4okg-poseidon-sites-map-live.qmd`,
+which asks *where are the samples*, this notebook asks *how were
+they produced* — and whether the answer depends on *where they come
+from*. It is part of an Open Educational Resource series on
+knowledge graphs and linked open data, and is designed to stand on
+its own. A local-Python variant of this notebook is available as
+`n4okg-poseidon-country-capture.ipynb`.
+
+::: {.callout-note}
+On first load, your browser downloads the Python runtime (Pyodide,
+~10 MB). Please allow a moment for it to initialise.
+:::
+
+::: {.callout-warning}
+The NFDI4Objects Knowledge Graph is a research prototype. If this
+notebook fails to load data with a *network error*, the endpoint may
+be temporarily unreachable or may not allow cross-origin browser
+requests from this page's domain. The local `.ipynb` companion is
+not affected by this and is always a reliable fallback.
+:::
+
+## About this notebook
+
+### Why this dataset?
+
+`collection/17` holds the Poseidon Community Archive (PCA), a large
+open corpus of archaeogenetic genotype data with contextual and
+bibliographic metadata (Schmid et al. 2024). The metadata contains
+a field describing the **capture type** of each sample — the
+laboratory protocol used to enrich aDNA fragments from a sample
+(e.g. *Shotgun*, *1240K*, various targeted panels). This is a
+methodological choice of the original project, not an underlying
+property of the archaeological record, and its distribution across
+countries is therefore an interesting question in its own right.
+
+### What you'll learn
+
+- how a single SPARQL query returning a tidy three-column + one-
+  measure table can drive two different visualisations
+- how to `pivot_table` a long-format SPARQL result into a
+  country × method matrix with `pandas`
+- how a **stacked bar** and a **heatmap** answer related but distinct
+  questions about the same cross-tabulation
+
+### Data-context notes
+
+- The query traverses the same ArNO path as the sites map
+  (`aDNASample → DiscoverySite → Site → Place → Country`), but adds
+  a second hop: `aDNASample → hasCaptureType → CaptureType`. Each
+  sample contributes to exactly one country–method cell.
+- Patterns in the resulting cross-tabulation should not automatically
+  be read as archaeological facts. They may reflect **publication
+  standards**, **project traditions**, or **technical preferences**
+  in particular labs and countries. The briefing document for this
+  query states this very clearly, and it is worth keeping in mind
+  when you interpret the plots below.
+
+### Tooling notes
+
+In the browser, SPARQL access goes through `pyodide.http.pyfetch` —
+`SPARQLWrapper` is not available in Pyodide. Plots use
+`matplotlib` with the `"Agg"` backend that Pyodide ships by default;
+figures are displayed inline by returning `plt.show()` from the
+cell.
+
+## Step 1 — Define the SPARQL query
+
+The query selects every `aDNASample` in the graph together with the
+country it was discovered in (via the chain `foundAtDiscoverySite →
+atSite → atPlace → inCountry`) and its capture type (via a direct
+`hasCaptureType` edge). `COUNT(DISTINCT ?sample)` makes sure we
+count each sample once, even if the graph exposes multiple paths.
+The two labels are wrapped in `OPTIONAL` so that samples with a
+missing country or capture-type label are still represented —
+visualising missing data is part of understanding the dataset.
+
+```{pyodide}
+#| label: setup
+#| autorun: false
+from pyodide.http import pyfetch
+import urllib.parse
+import pandas as pd
+
+SPARQL_ENDPOINT = "https://graph.nfdi4objects.net/api/sparql"
+
+SPARQL_QUERY = """
+PREFIX arno: <http://archaeonatural.cloud/ont/>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?countryLabel ?captureTypeLabel (COUNT(DISTINCT ?sample) AS ?numSamples)
+WHERE {
+  GRAPH <https://graph.nfdi4objects.net/collection/17> {
+    ?sample rdf:type arno:aDNASample ;
+            arno:foundAtDiscoverySite ?discoverySite ;
+            arno:hasCaptureType ?captureType .
+    ?discoverySite arno:atSite ?site .
+    ?site arno:atPlace ?place .
+    ?place arno:inCountry ?country .
+    OPTIONAL { ?country rdfs:label ?countryLabel . }
+    OPTIONAL { ?captureType rdfs:label ?captureTypeLabel . }
+  }
+}
+GROUP BY ?countryLabel ?captureTypeLabel
+ORDER BY DESC(?numSamples)
+"""
+
+async def fetch_sparql(endpoint, query):
+    # POST with form-encoded body — standard SPARQL 1.1 transport for
+    # long queries and the most robust option for queries containing
+    # GRAPH clauses with long IRIs.
+    body = urllib.parse.urlencode({"query": query})
+    response = await pyfetch(
+        endpoint,
+        method="POST",
+        headers={
+            "Accept": "application/sparql-results+json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body=body,
+    )
+    data = await response.json()
+    return data["results"]["bindings"]
+
+print("✓ Helpers defined. Run the next cell to load the data.")
+```
+
+## Step 2 — Load the data
+
+The query result is a long-format table: one row per `(country,
+capture type)` combination with the sample count attached. We
+convert it into a pandas DataFrame and print a quick summary to
+confirm the shape of the data before we plot it.
+
+```{pyodide}
+#| label: load-data
+#| autorun: false
+results = await fetch_sparql(SPARQL_ENDPOINT, SPARQL_QUERY)
+
+rows = [{
+    "country":     r.get("countryLabel",     {}).get("value", "(unknown)"),
+    "captureType": r.get("captureTypeLabel", {}).get("value", "(unknown)"),
+    "numSamples":  int(r["numSamples"]["value"]),
+} for r in results]
+
+df = pd.DataFrame(rows)
+assert not df.empty, "⚠ No records returned — check query."
+print(f"✓ {len(df)} country × capture-type cells "
+      f"({df['country'].nunique()} countries, "
+      f"{df['captureType'].nunique()} capture types, "
+      f"total samples: {df['numSamples'].sum()})")
+df.head(10)
+```
+
+## Step 3 — Build the pivot table
+
+The pivot turns the long-format result into a **country × method
+matrix** with sample counts as cell values. Missing combinations are
+filled with zero: the graph does not know about them, and leaving
+the cell as `NaN` would make the bar chart and the heatmap misbehave
+later.
+
+Both plots below read from this one matrix.
+
+```{pyodide}
+#| label: pivot
+#| autorun: false
+assert 'df' in dir() and not df.empty, "⚠ Please run the data-loading cell first."
+
+pivot = (df.pivot_table(
+            index="country", columns="captureType",
+            values="numSamples", aggfunc="sum", fill_value=0)
+           .astype(int))
+
+# Sort countries by total sample count (most-sampled on top of the chart)
+# and capture types by overall popularity (largest slice on the bottom
+# of each stacked bar).
+country_order = pivot.sum(axis=1).sort_values(ascending=False).index
+method_order  = pivot.sum(axis=0).sort_values(ascending=False).index
+pivot = pivot.loc[country_order, method_order]
+
+print(f"Pivot shape: {pivot.shape[0]} countries × {pivot.shape[1]} capture types")
+print(f"Top 5 countries by total samples:")
+for c, n in pivot.sum(axis=1).head(5).items():
+    print(f"  {c:25s}  {n}")
+print(f"Capture-type totals:")
+for m, n in pivot.sum(axis=0).items():
+    print(f"  {m:25s}  {n}")
+pivot.head()
+```
+
+## Step 4a — Stacked bar chart
+
+The stacked bar gives two pieces of information at once: bar length
+encodes the **total sample volume** per country, and the coloured
+segments encode the **methodological composition** within each. A
+country whose bar is dominated by one colour ran (mostly) one
+protocol; a country whose bar shows several colours of comparable
+size ran a mixed pipeline.
+
+Matplotlib's `DataFrame.plot(kind="barh", stacked=True)` does the
+heavy lifting here. We limit to the top 20 countries to keep labels
+readable — a tail of small contributions would compress the
+informative bars and make the chart harder to read.
+
+```{pyodide}
+#| label: stacked-bar
+#| autorun: false
+import matplotlib.pyplot as plt
+
+assert 'pivot' in dir(), "⚠ Please run the pivot cell first."
+
+TOP_N = 20
+top_countries = pivot.head(TOP_N)
+
+# Tab20 has 20 well-spaced categorical colours — enough for almost any
+# capture-type count the dataset is likely to produce, and visually
+# distinct from both viridis (used on the sites map) and the geographic
+# palette used there for countries.
+cmap = plt.get_cmap("tab20")
+colours = [cmap(i % 20) for i in range(len(top_countries.columns))]
+
+fig, ax = plt.subplots(figsize=(9, max(4, 0.35 * len(top_countries))))
+top_countries.plot(kind="barh", stacked=True, ax=ax, color=colours,
+                   edgecolor="white", linewidth=0.4)
+ax.invert_yaxis()   # largest country on top
+ax.set_xlabel("number of aDNA samples")
+ax.set_ylabel("")
+ax.set_title(f"Top {len(top_countries)} countries — aDNA samples by capture type")
+ax.legend(title="capture type", bbox_to_anchor=(1.02, 1.0), loc="upper left",
+          frameon=False, fontsize=8)
+# Light gridlines help reading the absolute scale on long bars
+ax.grid(axis="x", linestyle=":", alpha=0.5)
+ax.set_axisbelow(True)
+plt.tight_layout()
+plt.show()
+```
+
+## Step 4b — Heatmap
+
+The heatmap answers the complementary question to the bar chart:
+for *every* country × method combination, how many samples fall
+into that cell? Strong and weak combinations, sparsity, and
+country-specific method profiles all become visible simultaneously.
+Empty cells are shown as very pale — they signal either *no
+samples* or *the combination was never tried*, and on this dataset
+the distinction between those two is rarely decidable from the data
+alone.
+
+We use a `LogNorm`-scaled colour map because sample counts per cell
+are heavily right-skewed (a handful of large cells dominate; many
+cells have just a few samples). Linear scaling would collapse
+everything small to near-white and obscure the structure of the
+long tail.
+
+```{pyodide}
+#| label: heatmap
+#| autorun: false
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+import numpy as np
+
+assert 'pivot' in dir(), "⚠ Please run the pivot cell first."
+
+TOP_N_ROWS = 25
+heat = pivot.head(TOP_N_ROWS)
+
+# LogNorm needs strictly positive values. Replace zeros with a value below
+# vmin so they render as "below-scale" (the colormap's under-colour),
+# making empty cells visually distinct from small-but-present ones.
+data = heat.values.astype(float)
+positive = data[data > 0]
+if positive.size == 0:
+    vmin, vmax = 1, 1
+else:
+    vmin = max(1, positive.min())
+    vmax = positive.max()
+
+display_data = np.where(data > 0, data, vmin / 10.0)   # zeros become under-scale
+
+# Height scaled by rows (one row ≈ 0.38 inch); width with a generous
+# per-column allowance so short column labels never get clipped.
+fig, ax = plt.subplots(figsize=(max(7.5, 1.3 * heat.shape[1] + 4.5),
+                                max(5.5, 0.42 * heat.shape[0] + 1.2)))
+cmap = plt.get_cmap("YlOrRd").copy()
+cmap.set_under("#f1f1f1")       # pale grey for empty cells
+cmap.set_bad("#f1f1f1")
+
+im = ax.imshow(display_data, aspect="auto", cmap=cmap,
+               norm=LogNorm(vmin=vmin, vmax=vmax),
+               interpolation="nearest")
+
+# --- Axes & ticks ------------------------------------------------------
+# Column labels (capture types) go on TOP of the heatmap. At the bottom
+# they would sit under the figure edge at rotation 45 and get clipped by
+# tight_layout; above, there is always whitespace around the title.
+ax.set_xticks(range(heat.shape[1]))
+ax.set_xticklabels(heat.columns, rotation=30, ha="left", fontsize=9)
+ax.xaxis.set_ticks_position("top")
+ax.xaxis.set_label_position("top")
+ax.tick_params(axis="x", length=0)
+
+ax.set_yticks(range(heat.shape[0]))
+ax.set_yticklabels(heat.index, fontsize=9)
+ax.tick_params(axis="y", length=0)
+
+# White hairlines between cells — same trick as seaborn heatmaps.
+# Must be drawn after imshow.
+ax.set_xticks(np.arange(heat.shape[1] + 1) - 0.5, minor=True)
+ax.set_yticks(np.arange(heat.shape[0] + 1) - 0.5, minor=True)
+ax.grid(which="minor", color="white", linewidth=1.3)
+ax.tick_params(which="minor", length=0)
+
+# Title goes ABOVE the already-raised column labels
+ax.set_title(f"Samples per (country × capture type) — top {len(heat)} countries",
+             pad=40, fontsize=11)
+
+# --- Cell annotations --------------------------------------------------
+# Thresholds for text colour based on log-scale position: darker cells
+# get white text, lighter cells black. We compute the threshold in log
+# space so it matches what the eye perceives.
+log_mid = (np.log(vmin) + np.log(vmax)) / 2 if vmax > vmin else np.log(vmin)
+for i in range(heat.shape[0]):
+    for j in range(heat.shape[1]):
+        v = int(heat.values[i, j])
+        if v > 0:
+            text_colour = "white" if np.log(max(v, 1)) > log_mid else "#222"
+            ax.text(j, i, f"{v:,}" if v >= 1000 else str(v),
+                    ha="center", va="center",
+                    fontsize=8, color=text_colour)
+
+# --- Colour bar --------------------------------------------------------
+cbar = plt.colorbar(im, ax=ax, pad=0.02, extend="min")
+cbar.set_label("samples per cell (log scale)")
+cbar.ax.tick_params(labelsize=8)
+
+plt.tight_layout()
+plt.show()
+```
+
+## Step 5 — Exploring the data
+
+The cells below are a free playground. Two starting points: the
+full pivot is available as the `pivot` DataFrame, and the long-
+format result is available as `df`. Change the thresholds and see
+how the picture shifts.
+
+```{pyodide}
+#| label: explore-methods
+#| autorun: false
+assert 'pivot' in dir(), "⚠ Please run the pivot cell first."
+
+# Which countries are most methodologically diverse? Count non-zero
+# capture types per country — a poor-man's Shannon would be more
+# principled, but the raw count is already informative.
+diversity = (pivot > 0).sum(axis=1).sort_values(ascending=False)
+print(f"Top 10 countries by number of distinct capture types used:")
+for c, n in diversity.head(10).items():
+    total = int(pivot.loc[c].sum())
+    print(f"  {c:25s}  {n} capture types, {total} samples")
+```
+
+```{pyodide}
+#| label: explore-methods-share
+#| autorun: false
+assert 'pivot' in dir(), "⚠ Please run the pivot cell first."
+
+# For any given country, what's the share of each capture type? Change
+# the country below to inspect another one.
+COUNTRY = pivot.index[0]   # the most-sampled country by default
+row = pivot.loc[COUNTRY]
+total = row.sum()
+print(f"{COUNTRY} — {total} samples, capture-type shares:")
+shares = (row / total * 100).sort_values(ascending=False)
+for m, pct in shares.items():
+    if row[m] > 0:
+        print(f"  {m:25s}  {row[m]:5d}  ({pct:5.1f}%)")
+```
+
+---
+
+## References
+
+- **Straten, M. thor, Strohm, S., Thiery, F. & Renz, M.** (2025). Data-Driven
+  Community Standards for Interdisciplinary Heterogeneous Information
+  Networks. *E-Science-Tage 2025.* Heidelberg: heiBOOKS.
+  doi: [10.11588/heibooks.1652.c23914](https://doi.org/10.11588/heibooks.1652.c23914)
+- **Schmid, C. et al.** (2024). Poseidon — A framework for archaeogenetic
+  human genotype data management. *eLife* 13.
+  doi: [10.7554/eLife.98317.1](https://doi.org/10.7554/eLife.98317.1)
+- **archaeonatural-cloud/poseidon2lod** — RDF generation scripts.
+  [github.com/archaeonatural-cloud/poseidon2lod](https://github.com/archaeonatural-cloud/poseidon2lod)
+
+*This notebook is part of the Open Educational Resources of
+[NFDI4Objects](https://www.nfdi4objects.net/).*
