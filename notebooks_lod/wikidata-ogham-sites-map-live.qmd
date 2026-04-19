@@ -15,9 +15,10 @@ This notebook fetches Ogham-stone records from
 [Wikidata](https://www.wikidata.org) and displays their find-spots on
 two interactive [Leaflet](https://leafletjs.com/) maps, each with an
 OpenStreetMap basemap. The first map shows individual stones as
-county-coloured markers with pop-up details; the second shows the
-same points as a density heatmap, making regional concentration
-visible at a glance.
+county-coloured markers with pop-up details; the second bins the
+same points into a hex grid and shades each hexagon by the number of
+stones it contains, making regional concentration visible at a
+glance.
 
 It is a companion to `wikidata-ogham-sites-live.qmd` (bar-chart
 overview of the same dataset) and part of an Open Educational
@@ -249,8 +250,9 @@ markers_html = f"""
     const data = window["{markers_data_var}"];
 
     // Load Leaflet.fullscreen dynamically AFTER core Leaflet is ready.
-    // Same pattern as the heatmap plugin: avoid the race where a parallel
-    // <script> tag evaluates before L is defined.
+    // Leaflet plugins extend the global L, so parallel <script> tags
+    // would be a race condition: a plugin might execute before L is
+    // defined. Chaining onload avoids that.
     function loadFullscreenPlugin(cb) {{
         if (typeof L !== 'undefined' && L.control.fullscreen) return cb();
         if (typeof L === 'undefined') return setTimeout(() => loadFullscreenPlugin(cb), 50);
@@ -371,88 +373,212 @@ class _Html:
 _Html(markers_html)
 ```
 
-## Step 3b — Map with density heatmap
+## Step 3b — Map with hex-binned density grid
 
-The second map shows the same data as a density heatmap, which makes
-regional concentration immediately obvious. The heatmap is rendered
-by [`leaflet.heat`](https://github.com/Leaflet/Leaflet.heat), and
-[`Leaflet.fullscreen`](https://github.com/Leaflet/Leaflet.fullscreen)
-adds the maximise-to-fullscreen button. The same four base layers as
-in Step 3a are offered; the heatmap is the overlay.
+The second map shows the same data as a **hex-binned density grid**:
+we tile the area with regular hexagons, count how many stones fall
+into each hex, and colour each cell by its count. Empty hexagons are
+not drawn, so the result is a compact "honeycomb" that makes regional
+concentration immediately obvious — the same question a heatmap
+answers, but on *aggregated* data rather than a blurred point cloud.
 
-One subtlety worth pointing out: Leaflet plugins must be loaded
-*after* core Leaflet, because they extend the global `L`. Loading
-them as parallel `<script>` tags would be a race condition — a
-plugin script might execute before `leaflet.js` is parsed, leaving
-`L` undefined. The pattern below loads each plugin dynamically from
-inside the `<script>` block, so the order is guaranteed.
+### Why hex bins instead of a heatmap?
+
+Kernel-density heatmaps (e.g. `leaflet.heat`) are visually
+attractive but they have two well-known problems in a teaching
+context:
+
+1. **They're a canvas-rendered blur.** The result depends on
+   zoom level, the chosen kernel radius, and the container size;
+   resizing or fullscreening the map can silently break the
+   rendering. Hex bins, by contrast, are plain Leaflet polygons —
+   they resize cleanly and behave like any other map layer.
+2. **They hide the underlying counts.** A heatmap shows relative
+   intensity on an arbitrary colour ramp; a hex bin shows "this
+   hexagon contains *N* stones" and you can click it to verify.
+   For an OER, that transparency matters.
+
+Hex binning is a small but useful GIS pattern. It also matters that
+hexagons tile the plane with only *three* distinct edge directions
+(rectangles have two, triangles six) and that every neighbour is
+exactly the same distance away — which makes them the preferred
+choice for spatial aggregation in tools like
+[`h3`](https://h3geo.org/), [`kepler.gl`](https://kepler.gl/), and
+`geopandas` / `QGIS`.
+
+### A small projection trick
+
+We compute the hex grid in a trivial "equirectangular" projection:
+longitude becomes `x`, and latitude becomes `y ⋅ cos(φ₀)` where `φ₀`
+is a reference latitude (here, the mean latitude of our data). This
+makes the hexagons roughly equal-area at the latitude of interest,
+which is all we need for a continental-scale visualisation. For a
+global map or proper geodesy you would want `pyproj` — but that is
+not pre-bundled in Pyodide, and for Ireland at ~53° N the shortcut
+is entirely adequate.
 
 ```{pyodide}
 #| autorun: false
-#| label: render-heatmap
+#| label: render-hexgrid
 assert 'df' in dir() and not df.empty, "⚠ Please run the data-loading cell first."
 assert 'markers' in dir(), "⚠ Please run the previous cell (Step 3a) first."
 
-heatmap_map_id = f"ogham-heatmap-{uuid.uuid4().hex[:8]}"
-heatmap_data_var = f"__oghamHeatData_{heatmap_map_id.replace('-', '_')}"
-heatmap_payload = json.dumps([[m["lat"], m["lon"], 0.7] for m in markers])
+import math
+from collections import Counter
 
-heatmap_html = f"""
-<div id="{heatmap_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px"></div>
+# ---------------------------------------------------------------------------
+# 1. Hex-bin the points in Python
+# ---------------------------------------------------------------------------
+# We work in a degree-based projection with a cosine correction for
+# latitude, so one "unit" in y is roughly the same distance on the
+# ground as one "unit" in x at the reference latitude. This keeps the
+# hexagons looking regular on the map. `HEX_SIZE_DEG` is the hexagon
+# "radius" (centre-to-corner) in degrees of longitude; ~0.12° at 53°N
+# is roughly 8 km, a reasonable bin size for Ireland.
+
+HEX_SIZE_DEG = 0.12                    # tweak to get bigger/smaller hexes
+phi0 = math.radians(df["latitude"].mean())
+kx = 1.0                               # scale: x = lon
+ky = 1.0 / math.cos(phi0)              # scale: y = lat · 1/cos(phi0)
+
+def to_xy(lat, lon):
+    """Project (lat, lon) → (x, y) in locally equal-area degrees."""
+    return lon * kx, lat * ky
+
+def from_xy(x, y):
+    """Inverse projection back to (lat, lon)."""
+    return y / ky, x / kx
+
+def point_to_hex(x, y, size):
+    """Flat-top hex axial coords (q, r) for a point (x, y)."""
+    # Standard flat-top hex binning formulae.
+    q = (2.0 / 3.0) * x / size
+    r = (-1.0 / 3.0) * x / size + (math.sqrt(3) / 3.0) * y / size
+    return hex_round(q, r)
+
+def hex_round(q, r):
+    """Round fractional axial coords to the nearest hex (cube rounding)."""
+    x, z = q, r
+    y = -x - z
+    rx, ry, rz = round(x), round(y), round(z)
+    dx, dy, dz = abs(rx - x), abs(ry - y), abs(rz - z)
+    if dx > dy and dx > dz:
+        rx = -ry - rz
+    elif dy > dz:
+        ry = -rx - rz
+    else:
+        rz = -rx - ry
+    return int(rx), int(rz)
+
+def hex_center(q, r, size):
+    """Flat-top hex centre (x, y) from axial coords."""
+    x = size * 1.5 * q
+    y = size * math.sqrt(3) * (r + q / 2.0)
+    return x, y
+
+def hex_corners(cx, cy, size):
+    """Six corners of a flat-top hexagon centred at (cx, cy)."""
+    return [
+        (cx + size * math.cos(math.radians(60 * i)),
+         cy + size * math.sin(math.radians(60 * i)))
+        for i in range(6)
+    ]
+
+# Count stones per hex
+counts = Counter()
+for m in markers:
+    x, y = to_xy(m["lat"], m["lon"])
+    counts[point_to_hex(x, y, HEX_SIZE_DEG)] += 1
+
+# Build polygon features
+max_count = max(counts.values()) if counts else 1
+
+# 5-step sequential palette (YlOrRd-like, colour-blind-friendly-ish)
+ramp = ["#ffffb2", "#fecc5c", "#fd8d3c", "#f03b20", "#bd0026"]
+
+def bin_color(n):
+    """Pick a palette colour proportional to n / max_count (quintiles)."""
+    if max_count <= 1:
+        return ramp[-1]
+    idx = min(len(ramp) - 1, int((n - 1) / max_count * len(ramp)))
+    return ramp[idx]
+
+hex_features = []
+for (q, r), n in counts.items():
+    cx, cy = hex_center(q, r, HEX_SIZE_DEG)
+    corners_xy = hex_corners(cx, cy, HEX_SIZE_DEG)
+    corners_latlon = [from_xy(x, y) for x, y in corners_xy]
+    hex_features.append({
+        "polygon": corners_latlon,          # [(lat, lon), ...] × 6
+        "count":   n,
+        "color":   bin_color(n),
+    })
+
+# Legend bins: evenly split [1, max_count] into len(ramp) ranges.
+# We report integer edges, which is honest because counts are integers.
+def legend_bins(max_n, n_bins):
+    if max_n <= 1:
+        return [(1, 1)]
+    edges = [1 + round(i * (max_n - 1) / n_bins) for i in range(n_bins + 1)]
+    # Ensure strictly non-decreasing, collapse duplicates into single-value bins
+    bins = []
+    for i in range(n_bins):
+        lo, hi = edges[i], edges[i + 1] - (1 if i < n_bins - 1 else 0)
+        if hi < lo:
+            hi = lo
+        bins.append((lo, hi))
+    return bins
+
+legend = [
+    {"label": f"{lo}" if lo == hi else f"{lo}–{hi}", "color": ramp[i]}
+    for i, (lo, hi) in enumerate(legend_bins(max_count, len(ramp)))
+]
+
+print(f"✓ {len(hex_features)} hexagons built, max count = {max_count}.")
+
+# ---------------------------------------------------------------------------
+# 2. Hand the polygons to Leaflet (no plugins, no canvas tricks)
+# ---------------------------------------------------------------------------
+hex_map_id = f"ogham-hexgrid-{uuid.uuid4().hex[:8]}"
+hex_data_var = f"__oghamHexData_{hex_map_id.replace('-', '_')}"
+hex_payload = json.dumps({"hexes": hex_features, "legend": legend})
+
+hex_html = f"""
+<div id="{hex_map_id}" style="height:560px;width:100%;border:1px solid #ddd;border-radius:4px;margin-top:8px;position:relative"></div>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.css" />
-<script>window["{heatmap_data_var}"] = {heatmap_payload};</script>
+<script>window["{hex_data_var}"] = {hex_payload};</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function() {{
-    const mapId = "{heatmap_map_id}";
-    const points = window["{heatmap_data_var}"];
+    const mapId  = "{hex_map_id}";
+    const data   = window["{hex_data_var}"];
 
-    // Helper: load a Leaflet plugin script dynamically, after core Leaflet
-    // is ready. Parallel <script> tags race; this pattern doesn't.
-    function loadPluginWhenReady(src, readyCheck, cb) {{
-        if (typeof L !== 'undefined' && readyCheck()) return cb();
-        if (typeof L === 'undefined') {{
-            return setTimeout(() => loadPluginWhenReady(src, readyCheck, cb), 50);
-        }}
+    // Optional fullscreen plugin — same chain-loader pattern as Step 3a.
+    function loadFullscreen(cb) {{
+        if (typeof L !== 'undefined' && L.control && L.control.fullscreen) return cb();
+        if (typeof L === 'undefined') return setTimeout(() => loadFullscreen(cb), 50);
         const s = document.createElement('script');
-        s.src = src;
+        s.src = 'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js';
         s.onload = cb;
         document.head.appendChild(s);
     }}
 
-    function loadAllPlugins(cb) {{
-        loadPluginWhenReady(
-            'https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js',
-            () => !!L.heatLayer,
-            () => loadPluginWhenReady(
-                'https://unpkg.com/leaflet.fullscreen@3.0.2/Control.FullScreen.js',
-                () => !!(L.control && L.control.fullscreen),
-                cb
-            )
-        );
-    }}
-
     let initAttempts = 0;
-    const MAX_ATTEMPTS = 40;  // 40 × 50ms = 2 seconds grace for optional plugins
+    const MAX_ATTEMPTS = 40;
 
     function init() {{
         const el = document.getElementById(mapId);
         if (!el || typeof L === 'undefined') return setTimeout(init, 50);
         if (el._leaflet_id) return;
 
-        // Heat plugin is required (no point rendering an empty map);
-        // fullscreen is optional — wait briefly, then proceed without it.
-        if (!L.heatLayer) return setTimeout(init, 50);
         const hasFullscreen = !!(L.control && L.control.fullscreen);
         if (!hasFullscreen && initAttempts < MAX_ATTEMPTS) {{
             initAttempts++;
             return setTimeout(init, 50);
         }}
 
-        // --- Base layers (one active at a time) ------------------------
-        // URLs and attributions taken from the leaflet-providers registry:
-        // https://github.com/leaflet-extras/leaflet-providers
+        // --- Base layers (same four as Step 3a) ------------------------
         const osm = L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png', {{
             maxZoom: 19,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -471,27 +597,39 @@ heatmap_html = f"""
         }});
         const esriTerrain = L.tileLayer(
             'https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{{z}}/{{y}}/{{x}}', {{
-            maxZoom: 13,  // Esri caps World_Terrain_Base at zoom 13
+            maxZoom: 13,
             attribution: 'Tiles &copy; Esri &mdash; Source: USGS, Esri, TANA, DeLorme, and NPS'
         }});
 
-        // --- Overlay: density heatmap ----------------------------------
-        const heatLayer = L.heatLayer(points, {{
-            radius: 22, blur: 18, maxZoom: 11
-        }});
+        // --- Overlay: one polygon per hex ------------------------------
+        const hexLayer = L.layerGroup();
+        const allBounds = [];
+        for (const h of data.hexes) {{
+            const poly = L.polygon(h.polygon, {{
+                color: '#555',
+                weight: 0.7,
+                opacity: 0.8,
+                fillColor: h.color,
+                fillOpacity: 0.7
+            }}).bindTooltip(
+                '<b>' + h.count + '</b> Ogham stone' + (h.count === 1 ? '' : 's'),
+                {{ sticky: true }}
+            );
+            poly.addTo(hexLayer);
+            for (const [lat, lon] of h.polygon) allBounds.push([lat, lon]);
+        }}
 
-        // --- Create map with OSM + heatmap + (optional) fullscreen ----
+        // --- Assemble the map ------------------------------------------
         const mapOptions = {{
             center: [53.0, -8.0], zoom: 7,
-            layers: [osm, heatLayer]
+            layers: [osm, hexLayer]
         }};
         if (hasFullscreen) {{
             mapOptions.fullscreenControl = true;
             mapOptions.fullscreenControlOptions = {{ position: 'topleft' }};
         }}
         const map = L.map(mapId, mapOptions);
-        const bounds = points.map(p => [p[0], p[1]]);
-        if (bounds.length) map.fitBounds(bounds, {{ padding: [30, 30] }});
+        if (allBounds.length) map.fitBounds(allBounds, {{ padding: [30, 30] }});
 
         const baseLayers = {{
             "OpenStreetMap": osm,
@@ -499,61 +637,39 @@ heatmap_html = f"""
             "Esri.WorldImagery": esriImagery,
             "Esri.WorldTerrain": esriTerrain
         }};
-        const overlays = {{
-            "Density heatmap": heatLayer
-        }};
-        // collapsed:true → Leaflet default, expands on hover / tap
+        const overlays = {{ "Hex-binned density": hexLayer }};
         L.control.layers(baseLayers, overlays, {{ collapsed: true }}).addTo(map);
 
-        // --- Fullscreen / resize fix for the heatmap canvas ------------
-        // leaflet.heat draws on a canvas sized at layer-add time.
-        // When the container resizes (fullscreen toggle, window
-        // resize, etc.), Leaflet doesn't automatically re-dimension
-        // the canvas, so the heatmap visually disappears.
-        //
-        // We use a three-pronged approach for robustness:
-        //
-        // 1. Native DOM `fullscreenchange` event (fires on every
-        //    browser fullscreen transition, more reliable than
-        //    Leaflet.fullscreen's own event which has had bugs).
-        // 2. A `ResizeObserver` on the map container — catches any
-        //    size change regardless of cause.
-        // 3. On each trigger: invalidateSize, then REMOVE + RE-ADD
-        //    the heat layer. Re-adding forces leaflet.heat's onAdd
-        //    handler to re-measure getSize() and redimension the
-        //    canvas. Just calling redraw() keeps the old canvas
-        //    dimensions, which is why the heatmap stays invisible.
-        function refreshHeatLayer() {{
-            setTimeout(function() {{
-                map.invalidateSize();
-                if (map.hasLayer(heatLayer)) {{
-                    map.removeLayer(heatLayer);
-                    map.addLayer(heatLayer);
+        // --- Legend: custom Leaflet control with count ranges ----------
+        const LegendControl = L.Control.extend({{
+            options: {{ position: 'bottomright' }},
+            onAdd: function() {{
+                const div = L.DomUtil.create('div', 'ogham-hex-legend');
+                div.style.cssText = 'background:white;padding:8px 10px;border:1px solid #ccc;'
+                    + 'border-radius:4px;font:12px/1.4 sans-serif;box-shadow:0 1px 3px rgba(0,0,0,0.15)';
+                let html = '<div style="font-weight:600;margin-bottom:4px">Stones per hex</div>';
+                for (const row of data.legend) {{
+                    html += '<div style="display:flex;align-items:center;margin:2px 0">'
+                        + '<span style="display:inline-block;width:14px;height:14px;'
+                        + 'background:' + row.color + ';border:1px solid #777;margin-right:6px"></span>'
+                        + row.label + '</div>';
                 }}
-            }}, 250);
-        }}
-
-        // (1) Native browser fullscreen events, all vendor prefixes
-        ['fullscreenchange', 'webkitfullscreenchange',
-         'mozfullscreenchange', 'MSFullscreenChange'].forEach(function(ev) {{
-            document.addEventListener(ev, refreshHeatLayer);
+                div.innerHTML = html;
+                L.DomEvent.disableClickPropagation(div);
+                return div;
+            }}
         }});
-
-        // (2) ResizeObserver on the map container — broader safety net
-        if (typeof ResizeObserver !== 'undefined') {{
-            const ro = new ResizeObserver(function() {{ refreshHeatLayer(); }});
-            ro.observe(el);
-        }}
+        new LegendControl().addTo(map);
 
         setTimeout(() => map.invalidateSize(), 200);
     }}
 
-    loadAllPlugins(init);
+    loadFullscreen(init);
 }})();
 </script>
 """
 
-_Html(heatmap_html)
+_Html(hex_html)
 ```
 
 ## Step 4 — Exploring the data
