@@ -31,7 +31,7 @@ keywords:
 # Technische Metadaten
 site-url: &site https://n4o-rse.github.io/oer-001-sparqling-archaeology/
 repo-url: &repo https://github.com/n4o-rse/oer-001-sparqling-archaeology
-doi: &doi XXXXXXX.XXXXXXX
+doi: &doi 10.5281/zenodo.19650452
 
 # Vorgaben für den Appendix "Zitat"
 csl: assets/csl/internet-archaeology.csl # Verweis auf CSL-Datei mit Zitierformat. Weitere CSL-Dateien im Verzeichnis assets/csl/. Fehlende CSL-Dateien können hier heruntergeladen werden: https://www.zotero.org/styles

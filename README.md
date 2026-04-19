@@ -3,6 +3,8 @@
 An Open Educational Resource (OER) introducing archaeologists to the practical use of archaeological Knowledge Graphs. Examples from NFDI4Objects Task Area 2, TRAIL 2.5 and 2.8.
  
 **Live version:** <https://n4o-rse.github.io/oer-001-sparqling-archaeology/>
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19650452.svg)](https://doi.org/10.5281/zenodo.19650452)
  
 ---
  
